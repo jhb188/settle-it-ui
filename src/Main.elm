@@ -67,6 +67,8 @@ type alias GameState =
     , focalPoint : Point3d.Point3d Length.Meters Physics.Coordinates.WorldCoordinates
     , camera : Camera3d.Camera3d Length.Meters Physics.Coordinates.WorldCoordinates
     , lastUpdated : Int
+    , newServerState : Maybe Json.Encode.Value
+    , msSinceLastServerUpdateApplied : Int
     }
 
 
@@ -314,6 +316,8 @@ initPlaying playerId { bodies, lastUpdated } =
         , focalPoint = focalPoint
         , camera = camera
         , lastUpdated = lastUpdated
+        , newServerState = Nothing
+        , msSinceLastServerUpdateApplied = 0
         }
     , Task.perform ViewportChanged Browser.Dom.getViewport
     )
@@ -483,100 +487,129 @@ simulatePhysics world ms =
         world
 
 
+getNextSimulatedGameState : Float -> GameState -> GameState
+getNextSimulatedGameState ms gameState =
+    let
+        world =
+            simulatePhysics gameState.world ms
+
+        nextCamera =
+            case getMe world of
+                Nothing ->
+                    gameState.camera
+
+                Just me ->
+                    let
+                        nextEyePoint =
+                            getEyePoint me
+
+                        currentCameraAxis =
+                            getLookAxis gameState
+
+                        nextCameraAxis =
+                            Axis3d.moveTo nextEyePoint currentCameraAxis
+
+                        nextFocalPoint =
+                            Point3d.along nextCameraAxis (Length.meters 1)
+                    in
+                    Camera3d.perspective
+                        { viewpoint =
+                            Viewpoint3d.lookAt
+                                { eyePoint = nextEyePoint
+                                , focalPoint = nextFocalPoint
+                                , upDirection = Direction3d.positiveZ
+                                }
+                        , verticalFieldOfView = fovAngle
+                        }
+    in
+    { gameState
+        | camera = nextCamera
+        , world = world
+        , newServerState = Nothing
+        , msSinceLastServerUpdateApplied = gameState.msSinceLastServerUpdateApplied + ceiling ms
+    }
+
+
+serverUpdateErrorThresholdMs =
+    1000
+
+
 updateGameState : Msg -> GameState -> ( GameState, Cmd Msg )
 updateGameState msg model =
     case msg of
         Delta ms ->
             let
-                world =
-                    simulatePhysics model.world ms
+                nextModel =
+                    case model.newServerState of
+                        Just gameUpdateData ->
+                            case Json.Decode.decodeValue (Server.State.decoder model.playerId) gameUpdateData of
+                                Err _ ->
+                                    getNextSimulatedGameState ms model
 
-                nextCamera =
-                    case getMe world of
-                        Nothing ->
-                            model.camera
+                                Ok { bodies, lastUpdated } ->
+                                    if
+                                        (lastUpdated > model.lastUpdated)
+                                            && (abs (lastUpdated - (model.lastUpdated + model.msSinceLastServerUpdateApplied)) < serverUpdateErrorThresholdMs)
+                                    then
+                                        let
+                                            isStaticClass bodyClass =
+                                                List.member bodyClass [ Wall, Floor, Test ]
 
-                        Just me ->
-                            let
-                                nextEyePoint =
-                                    getEyePoint me
+                                            nextWorld =
+                                                model.world
+                                                    |> Physics.World.keepIf (Physics.Body.data >> .class >> isStaticClass)
+                                                    |> addBodies bodies
 
-                                currentCameraAxis =
-                                    getLookAxis model
+                                            nextCamera =
+                                                case getMe nextWorld of
+                                                    Nothing ->
+                                                        model.camera
 
-                                nextCameraAxis =
-                                    Axis3d.moveTo nextEyePoint currentCameraAxis
+                                                    Just me ->
+                                                        let
+                                                            nextEyePoint =
+                                                                getEyePoint me
 
-                                nextFocalPoint =
-                                    Point3d.along nextCameraAxis (Length.meters 1)
-                            in
-                            Camera3d.perspective
-                                { viewpoint =
-                                    Viewpoint3d.lookAt
-                                        { eyePoint = nextEyePoint
-                                        , focalPoint = nextFocalPoint
-                                        , upDirection = Direction3d.positiveZ
+                                                            currentCameraAxis =
+                                                                getLookAxis model
+
+                                                            nextCameraAxis =
+                                                                Axis3d.moveTo nextEyePoint currentCameraAxis
+
+                                                            nextFocalPoint =
+                                                                Point3d.along nextCameraAxis (Length.meters 1)
+                                                        in
+                                                        Camera3d.perspective
+                                                            { viewpoint =
+                                                                Viewpoint3d.lookAt
+                                                                    { eyePoint = nextEyePoint
+                                                                    , focalPoint = nextFocalPoint
+                                                                    , upDirection = Direction3d.positiveZ
+                                                                    }
+                                                            , verticalFieldOfView = fovAngle
+                                                            }
+                                        in
+                                        { model
+                                            | world = nextWorld
+                                            , camera = nextCamera
+                                            , lastUpdated = lastUpdated
+                                            , newServerState = Nothing
+                                            , msSinceLastServerUpdateApplied = 0
                                         }
-                                , verticalFieldOfView = fovAngle
-                                }
 
-                modelCameraUpdated =
-                    { model | camera = nextCamera }
+                                    else
+                                        getNextSimulatedGameState ms model
+
+                        Nothing ->
+                            getNextSimulatedGameState ms model
 
                 ( nextModelMovementApplied, movementCmds ) =
-                    updateMovement ms modelCameraUpdated
+                    updateMovement ms nextModel
             in
             ( nextModelMovementApplied |> updateTarget ms, movementCmds )
 
         GameUpdated gameUpdateData ->
-            case Json.Decode.decodeValue (Server.State.decoder model.playerId) gameUpdateData of
-                Err _ ->
-                    ( model, Cmd.none )
-
-                Ok { bodies, lastUpdated } ->
-                    if lastUpdated > model.lastUpdated then
-                        let
-                            isStaticClass bodyClass =
-                                List.member bodyClass [ Wall, Floor, Test ]
-
-                            nextWorld =
-                                model.world
-                                    |> Physics.World.keepIf (Physics.Body.data >> .class >> isStaticClass)
-                                    |> addBodies bodies
-
-                            nextCamera =
-                                case getMe nextWorld of
-                                    Nothing ->
-                                        model.camera
-
-                                    Just me ->
-                                        let
-                                            nextEyePoint =
-                                                getEyePoint me
-
-                                            currentCameraAxis =
-                                                getLookAxis model
-
-                                            nextCameraAxis =
-                                                Axis3d.moveTo nextEyePoint currentCameraAxis
-
-                                            nextFocalPoint =
-                                                Point3d.along nextCameraAxis (Length.meters 1)
-                                        in
-                                        Camera3d.perspective
-                                            { viewpoint =
-                                                Viewpoint3d.lookAt
-                                                    { eyePoint = nextEyePoint
-                                                    , focalPoint = nextFocalPoint
-                                                    , upDirection = Direction3d.positiveZ
-                                                    }
-                                            , verticalFieldOfView = fovAngle
-                                            }
-                        in
-                        ( { model | world = nextWorld, camera = nextCamera, lastUpdated = lastUpdated }, Cmd.none )
-
-                    else
-                        ( model, Cmd.none )
+            ( { model | newServerState = Just gameUpdateData }, Cmd.none )
 
         ViewportChanged { viewport } ->
             let
