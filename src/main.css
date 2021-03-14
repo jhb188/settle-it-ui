@@ -16,7 +16,7 @@ body {
   text-align: center;
   color: #293c4b;
   height: 100%;
-  touch-action: none;
+  touch-action: manipulation;
 }
 
 html {
@@ -27,7 +27,7 @@ html {
   -moz-user-select: none;
   -ms-user-select: none;
   user-select: none;
-  touch-action: none;
+  touch-action: manipulation;
 }
 
 h1 {
