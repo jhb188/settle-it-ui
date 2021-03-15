@@ -355,9 +355,12 @@ updateMovement ms model =
                 yMovement =
                     y / 10
 
+                coordsAreInvalid =
+                    isNaN x || isNaN y
+
                 ( modelWithUpdatedWorld, cmds ) =
-                    case getMe model.world of
-                        Just me ->
+                    case ( getMe model.world, coordsAreInvalid ) of
+                        ( Just me, False ) ->
                             let
                                 frame =
                                     Physics.Body.frame me
@@ -376,17 +379,13 @@ updateMovement ms model =
                                 }
                             )
 
-                        Nothing ->
+                        _ ->
                             ( model, Cmd.none )
 
                 nextModel =
                     { modelWithUpdatedWorld | movementPadHeldMs = model.movementPadHeldMs + ms }
             in
-            if not (isNaN x || isNaN y) then
-                ( nextModel, cmds )
-
-            else
-                ( nextModel, Cmd.none )
+            ( nextModel, cmds )
 
         Nothing ->
             ( model, Cmd.none )
@@ -552,13 +551,8 @@ updateGameState msg model =
                                             && (abs (lastUpdated - (model.lastUpdated + model.msSinceLastServerUpdateApplied)) < serverUpdateErrorThresholdMs)
                                     then
                                         let
-                                            isStaticClass bodyClass =
-                                                List.member bodyClass [ Wall, Floor, Test ]
-
                                             nextWorld =
-                                                model.world
-                                                    |> Physics.World.keepIf (Physics.Body.data >> .class >> isStaticClass)
-                                                    |> addBodies bodies
+                                                addBodies bodies initWorld
 
                                             nextCamera =
                                                 case getMe nextWorld of
@@ -796,7 +790,7 @@ view model =
                                                     , roughness = 0.4
                                                     }
                                                 )
-                                                (Sphere3d.atOrigin (Length.feet 1))
+                                                (Sphere3d.atOrigin (Length.meters 0.5))
                                                 |> Scene3d.placeIn bodyFrame
                                             )
 
