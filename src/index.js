@@ -68,6 +68,10 @@ app.ports.requestMove.subscribe(({playerId, x, y}) => {
   gameChannel.push("player_move", {player_id: playerId, x: x / 1, y: y / 1});
 });
 
+app.ports.requestRotate.subscribe(({playerId, angle}) => {
+  gameChannel.push("player_rotate", {player_id: playerId, angle: angle});
+});
+
 // app.ports.startGame.subscribe((data) => {
 //   gameChannel.push("start_game", data);
 // });

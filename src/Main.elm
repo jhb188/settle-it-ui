@@ -28,10 +28,8 @@ import Physics.Body
 import Physics.Coordinates
 import Physics.World
 import Pixels
-import Point2d
 import Point3d
 import Quantity
-import Rectangle2d
 import Scene3d
 import Scene3d.Material
 import Server.State
@@ -67,11 +65,10 @@ type alias GameState =
     , targetPadOffset : Maybe Vec2
     , targetPadHeldMs : Float
     , world : Physics.World.World Data
-    , focalPoint : Point3d.Point3d Length.Meters Physics.Coordinates.WorldCoordinates
-    , camera : Camera3d.Camera3d Length.Meters Physics.Coordinates.WorldCoordinates
     , lastUpdated : Int
     , newServerState : Maybe Json.Encode.Value
     , msSinceLastServerUpdateApplied : Int
+    , cameraXRotationAngle : Float
     }
 
 
@@ -162,18 +159,19 @@ getEyePoint me =
 
 
 getLookAxis : GameState -> Axis3d.Axis3d Length.Meters Physics.Coordinates.WorldCoordinates
-getLookAxis { viewSize, camera } =
-    let
-        screenFocusedPoint =
-            viewSize / 2
-    in
-    Camera3d.ray
-        camera
-        (Rectangle2d.from
-            Point2d.origin
-            (Point2d.pixels viewSize viewSize)
-        )
-        (Point2d.pixels screenFocusedPoint screenFocusedPoint)
+getLookAxis gameState =
+    case getMe gameState.world of
+        Just me ->
+            me
+                |> Physics.Body.frame
+                |> Frame3d.rotateAroundOwn
+                    Frame3d.xAxis
+                    (Angle.degrees gameState.cameraXRotationAngle)
+                |> Frame3d.yAxis
+                |> Axis3d.moveTo (getEyePoint me)
+
+        Nothing ->
+            Frame3d.yAxis Frame3d.atOrigin
 
 
 atRest : Physics.Body.Body Data -> Bool
@@ -233,25 +231,6 @@ initPlaying playerId { bodies, lastUpdated } =
     let
         world =
             addBodies bodies initWorld
-
-        ( focalPoint, eyePoint ) =
-            case getMe world of
-                Just me ->
-                    ( getInitialFocalPoint me, getEyePoint me )
-
-                Nothing ->
-                    ( Point3d.origin, Point3d.origin )
-
-        camera =
-            Camera3d.perspective
-                { viewpoint =
-                    Viewpoint3d.lookAt
-                        { eyePoint = eyePoint
-                        , focalPoint = focalPoint
-                        , upDirection = Direction3d.positiveZ
-                        }
-                , verticalFieldOfView = fovAngle
-                }
     in
     ( Playing
         { playerId = playerId
@@ -263,11 +242,10 @@ initPlaying playerId { bodies, lastUpdated } =
         , targetPadOffset = Nothing
         , targetPadHeldMs = 0
         , world = world
-        , focalPoint = focalPoint
-        , camera = camera
         , lastUpdated = lastUpdated
         , newServerState = Nothing
         , msSinceLastServerUpdateApplied = 0
+        , cameraXRotationAngle = 0.0
         }
     , Task.perform ViewportChanged Browser.Dom.getViewport
     )
@@ -299,12 +277,12 @@ shootThresholdMs =
 
 
 updateMovement : Float -> GameState -> ( GameState, Cmd Msg )
-updateMovement ms model =
-    case model.movementPadOffset of
+updateMovement ms gameState =
+    case gameState.movementPadOffset of
         Just relativePos ->
             let
                 direction =
-                    Vec2.direction relativePos model.movementPadOrigin
+                    Vec2.direction relativePos gameState.movementPadOrigin
 
                 { x, y } =
                     Vec2.toRecord <| direction
@@ -318,8 +296,8 @@ updateMovement ms model =
                 coordsAreInvalid =
                     isNaN x || isNaN y
 
-                ( modelWithUpdatedWorld, cmds ) =
-                    case ( getMe model.world, coordsAreInvalid ) of
+                ( gameStateWithUpdatedWorld, cmds ) =
+                    case ( getMe gameState.world, coordsAreInvalid ) of
                         ( Just me, False ) ->
                             let
                                 myFrame =
@@ -333,85 +311,87 @@ updateMovement ms model =
                                 nextOriginPoint =
                                     Frame3d.placeIn Frame3d.atOrigin bodyFrameMoved |> Frame3d.originPoint
                             in
-                            ( { model | world = updateMe (Physics.Body.moveTo nextOriginPoint) model.world }
+                            ( { gameState
+                                | world = updateMe (Physics.Body.moveTo nextOriginPoint) gameState.world
+                              }
                             , requestMove
-                                { playerId = model.playerId
+                                { playerId = gameState.playerId
                                 , x = Point3d.xCoordinate nextOriginPoint |> Length.inMeters
                                 , y = Point3d.yCoordinate nextOriginPoint |> Length.inMeters
                                 }
                             )
 
                         _ ->
-                            ( model, Cmd.none )
-
-                nextModel =
-                    { modelWithUpdatedWorld | movementPadHeldMs = model.movementPadHeldMs + ms }
+                            ( gameState, Cmd.none )
             in
-            ( nextModel, cmds )
+            ( { gameStateWithUpdatedWorld | movementPadHeldMs = gameState.movementPadHeldMs + ms }, cmds )
 
         Nothing ->
-            ( model, Cmd.none )
+            ( gameState, Cmd.none )
 
 
-updateTarget : Float -> GameState -> GameState
-updateTarget ms model =
-    case model.targetPadOffset of
+updateTarget : Float -> GameState -> ( GameState, Cmd Msg )
+updateTarget ms gameState =
+    case gameState.targetPadOffset of
         Just relativePos ->
             let
                 direction =
-                    Vec2.direction model.targetPadOrigin relativePos
+                    Vec2.direction gameState.targetPadOrigin relativePos
 
                 { x, y } =
                     Vec2.toRecord <| direction
 
-                yRotationDeg =
+                xRotationDeg =
                     y / 2
 
                 zRotationDeg =
                     x / 2
 
-                currentCameraAxis =
-                    getLookAxis model
+                rotateMe me =
+                    let
+                        myFrame =
+                            Physics.Body.frame me
 
-                currentCameraFrame =
-                    Frame3d.fromXAxis currentCameraAxis
-
-                nextCameraFrame =
-                    currentCameraFrame
-                        |> Frame3d.rotateAroundOwn Frame3d.yAxis (Angle.degrees yRotationDeg)
+                        rotationAxis =
+                            Frame3d.zAxis myFrame |> Axis3d.placeIn Frame3d.atOrigin
+                    in
+                    Physics.Body.rotateAround rotationAxis (Angle.degrees zRotationDeg) me
 
                 nextWorld =
-                    updateMe (Physics.Body.rotateAround Axis3d.z (Angle.degrees -zRotationDeg)) model.world
+                    updateMe rotateMe gameState.world
 
-                nextCameraAxis =
-                    Frame3d.xAxis nextCameraFrame
-
-                nextFocalPoint =
-                    Point3d.along nextCameraAxis (Length.meters 1)
-
-                nextCamera =
-                    Camera3d.perspective
-                        { viewpoint =
-                            Viewpoint3d.lookAt
-                                { eyePoint = Axis3d.originPoint nextCameraAxis
-                                , focalPoint = nextFocalPoint
-                                , upDirection = Direction3d.positiveZ
-                                }
-                        , verticalFieldOfView = fovAngle
-                        }
+                coordsAreInvalid =
+                    isNaN x || isNaN y
             in
-            if not (isNaN x || isNaN y) then
-                { model
-                    | camera = nextCamera
-                    , targetPadHeldMs = model.targetPadHeldMs + ms
-                    , world = nextWorld
-                }
+            case ( getMe nextWorld, coordsAreInvalid ) of
+                ( Just updatedMe, False ) ->
+                    let
+                        myFrameLookDirection =
+                            updatedMe |> Physics.Body.frame |> Frame3d.yDirection
 
-            else
-                model
+                        newRotationAngle =
+                            Direction3d.angleFrom (Frame3d.yDirection Frame3d.atOrigin) myFrameLookDirection |> Angle.inDegrees
+
+                        newRotationAngleNormalized =
+                            if Direction3d.xComponent myFrameLookDirection > 0 then
+                                360.0 - newRotationAngle
+
+                            else
+                                newRotationAngle
+                    in
+                    ( { gameState
+                        | cameraXRotationAngle = gameState.cameraXRotationAngle - xRotationDeg
+                        , targetPadHeldMs = gameState.targetPadHeldMs + ms
+                        , world = nextWorld
+                      }
+                    , requestRotate { playerId = gameState.playerId, angle = newRotationAngleNormalized }
+                    )
+
+                _ ->
+                    ( gameState, Cmd.none )
 
         Nothing ->
-            model
+            ( gameState, Cmd.none )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -450,42 +430,8 @@ simulatePhysics world ms =
 
 getNextSimulatedGameState : Float -> GameState -> GameState
 getNextSimulatedGameState ms gameState =
-    let
-        world =
-            simulatePhysics gameState.world ms
-
-        nextCamera =
-            case getMe world of
-                Nothing ->
-                    gameState.camera
-
-                Just me ->
-                    let
-                        nextEyePoint =
-                            getEyePoint me
-
-                        currentCameraAxis =
-                            getLookAxis gameState
-
-                        nextCameraAxis =
-                            Axis3d.moveTo nextEyePoint currentCameraAxis
-
-                        nextFocalPoint =
-                            Point3d.along nextCameraAxis (Length.meters 1)
-                    in
-                    Camera3d.perspective
-                        { viewpoint =
-                            Viewpoint3d.lookAt
-                                { eyePoint = nextEyePoint
-                                , focalPoint = nextFocalPoint
-                                , upDirection = Direction3d.positiveZ
-                                }
-                        , verticalFieldOfView = fovAngle
-                        }
-    in
     { gameState
-        | camera = nextCamera
-        , world = world
+        | world = simulatePhysics gameState.world ms
         , newServerState = Nothing
         , msSinceLastServerUpdateApplied = gameState.msSinceLastServerUpdateApplied + ceiling ms
     }
@@ -497,76 +443,45 @@ serverUpdateErrorThresholdMs =
 
 
 updateGameState : Msg -> GameState -> ( GameState, Cmd Msg )
-updateGameState msg model =
+updateGameState msg gameState =
     case msg of
         Delta ms ->
             let
                 nextModel =
-                    case model.newServerState of
+                    case gameState.newServerState of
                         Just gameUpdateData ->
-                            case Json.Decode.decodeValue (Server.State.decoder model.playerId) gameUpdateData of
+                            case Json.Decode.decodeValue (Server.State.decoder gameState.playerId) gameUpdateData of
                                 Err _ ->
-                                    getNextSimulatedGameState ms model
+                                    getNextSimulatedGameState ms gameState
 
                                 Ok { bodies, lastUpdated } ->
                                     if
-                                        (lastUpdated > model.lastUpdated)
-                                            && (abs (lastUpdated - (model.lastUpdated + model.msSinceLastServerUpdateApplied)) < serverUpdateErrorThresholdMs)
+                                        (lastUpdated > gameState.lastUpdated)
+                                            && (abs (lastUpdated - (gameState.lastUpdated + gameState.msSinceLastServerUpdateApplied)) < serverUpdateErrorThresholdMs)
                                     then
-                                        let
-                                            nextWorld =
-                                                addBodies bodies initWorld
-
-                                            nextCamera =
-                                                case getMe nextWorld of
-                                                    Nothing ->
-                                                        model.camera
-
-                                                    Just me ->
-                                                        let
-                                                            nextEyePoint =
-                                                                getEyePoint me
-
-                                                            currentCameraAxis =
-                                                                getLookAxis model
-
-                                                            nextCameraAxis =
-                                                                Axis3d.moveTo nextEyePoint currentCameraAxis
-
-                                                            nextFocalPoint =
-                                                                Point3d.along nextCameraAxis (Length.meters 1)
-                                                        in
-                                                        Camera3d.perspective
-                                                            { viewpoint =
-                                                                Viewpoint3d.lookAt
-                                                                    { eyePoint = nextEyePoint
-                                                                    , focalPoint = nextFocalPoint
-                                                                    , upDirection = Direction3d.positiveZ
-                                                                    }
-                                                            , verticalFieldOfView = fovAngle
-                                                            }
-                                        in
-                                        { model
-                                            | world = nextWorld
-                                            , camera = nextCamera
+                                        { gameState
+                                            | world = addBodies bodies initWorld
                                             , lastUpdated = lastUpdated
                                             , newServerState = Nothing
                                             , msSinceLastServerUpdateApplied = 0
                                         }
 
                                     else
-                                        getNextSimulatedGameState ms model
+                                        getNextSimulatedGameState ms gameState
 
                         Nothing ->
-                            getNextSimulatedGameState ms model
+                            getNextSimulatedGameState ms gameState
 
                 ( nextModelMovementApplied, movementCmds ) =
                     updateMovement ms nextModel
+
+                ( nextModelRotationApplied, rotationCmds ) =
+                    nextModelMovementApplied |> updateTarget ms
             in
-            ( nextModelMovementApplied |> updateTarget ms, movementCmds )
+            ( nextModelRotationApplied, Cmd.batch [ movementCmds, rotationCmds ] )
 
         GameUpdated gameUpdateData ->
-            ( { model | newServerState = Just gameUpdateData }, Cmd.none )
+            ( { gameState | newServerState = Just gameUpdateData }, Cmd.none )
 
         ViewportChanged { viewport } ->
             let
@@ -575,60 +490,37 @@ updateGameState msg model =
 
                 shortDimension =
                     min width height
-
-                nextModel =
-                    { model | viewSize = shortDimension - 20.0 }
-
-                nextCamera =
-                    case getMe model.world of
-                        Nothing ->
-                            model.camera
-
-                        Just me ->
-                            let
-                                eyePoint =
-                                    getEyePoint me
-                            in
-                            Camera3d.perspective
-                                { viewpoint =
-                                    Viewpoint3d.lookAt
-                                        { eyePoint = eyePoint
-                                        , focalPoint = getInitialFocalPoint me
-                                        , upDirection = Direction3d.positiveZ
-                                        }
-                                , verticalFieldOfView = fovAngle
-                                }
             in
-            ( { nextModel | camera = nextCamera }, Cmd.none )
+            ( { gameState | viewSize = shortDimension - 20.0 }, Cmd.none )
 
         MovementPadDown newOrigin ->
-            ( { model | movementPadOrigin = newOrigin, movementPadOffset = Just newOrigin }, Cmd.none )
+            ( { gameState | movementPadOrigin = newOrigin, movementPadOffset = Just newOrigin }, Cmd.none )
 
         TargetPadDown newOrigin ->
-            ( { model | targetPadOrigin = newOrigin, targetPadOffset = Just newOrigin }, Cmd.none )
+            ( { gameState | targetPadOrigin = newOrigin, targetPadOffset = Just newOrigin }, Cmd.none )
 
         MovementPadMoved relativePos ->
-            ( { model | movementPadOffset = Just relativePos }, Cmd.none )
+            ( { gameState | movementPadOffset = Just relativePos }, Cmd.none )
 
         TargetPadMoved relativePos ->
-            ( { model | targetPadOffset = Just relativePos }, Cmd.none )
+            ( { gameState | targetPadOffset = Just relativePos }, Cmd.none )
 
         MovementPadUp ->
             let
                 nextModel =
-                    { model
+                    { gameState
                         | movementPadOffset = Nothing
                         , movementPadHeldMs = 0
                     }
 
                 { world } =
-                    model
+                    gameState
             in
-            if model.movementPadHeldMs < jumpThresholdMs then
+            if gameState.movementPadHeldMs < jumpThresholdMs then
                 ( { nextModel
                     | world = updateMe jump world
                   }
-                , requestJump model.playerId
+                , requestJump gameState.playerId
                 )
 
             else
@@ -637,15 +529,15 @@ updateGameState msg model =
         TargetPadUp ->
             let
                 nextModel =
-                    { model
+                    { gameState
                         | targetPadOffset = Nothing
                         , targetPadHeldMs = 0
                     }
             in
-            if model.targetPadHeldMs < shootThresholdMs then
+            if gameState.targetPadHeldMs < shootThresholdMs then
                 let
                     projectileOrientation =
-                        getLookAxis model
+                        getLookAxis gameState
 
                     projectileStartPoint =
                         Axis3d.originPoint projectileOrientation
@@ -660,7 +552,7 @@ updateGameState msg model =
                                 projectileStartPoint
 
                     nextWorld =
-                        Physics.World.add projectile model.world
+                        Physics.World.add projectile gameState.world
                 in
                 ( { nextModel | world = nextWorld }
                 , Cmd.none
@@ -762,6 +654,35 @@ view model =
                                     _ ->
                                         Nothing
                             )
+
+                viewpoint =
+                    case getMe gameState.world of
+                        Just me ->
+                            let
+                                eyePoint =
+                                    getEyePoint me
+
+                                cameraAxis =
+                                    getLookAxis gameState
+
+                                focalPoint =
+                                    Point3d.along cameraAxis (Length.meters 1)
+                            in
+                            Viewpoint3d.lookAt
+                                { eyePoint = eyePoint
+                                , focalPoint = focalPoint
+                                , upDirection = Direction3d.positiveZ
+                                }
+
+                        Nothing ->
+                            Viewpoint3d.lookAt
+                                { eyePoint = Point3d.origin
+                                , focalPoint = Point3d.origin
+                                , upDirection = Direction3d.positiveZ
+                                }
+
+                camera =
+                    Camera3d.perspective { viewpoint = viewpoint, verticalFieldOfView = fovAngle }
             in
             Html.div
                 [ Html.Attributes.style "height" "100%"
@@ -782,7 +703,7 @@ view model =
                         , sunlightDirection = Direction3d.yz (Angle.degrees -120)
                         , shadows = True
                         , dimensions = ( Pixels.int <| round gameState.viewSize, Pixels.int <| round gameState.viewSize )
-                        , camera = gameState.camera
+                        , camera = camera
                         , clipDepth = Length.meters 0.5
                         , background = Scene3d.transparentBackground
                         , entities = entities
@@ -856,6 +777,9 @@ port requestJump : String -> Cmd msg
 
 
 port requestMove : { playerId : String, x : Float, y : Float } -> Cmd msg
+
+
+port requestRotate : { playerId : String, angle : Float } -> Cmd msg
 
 
 port gameUpdated : (Json.Encode.Value -> msg) -> Sub msg

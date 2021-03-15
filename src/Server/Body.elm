@@ -138,8 +138,8 @@ toPhysicsBody myId body =
 
 getDefaultBody : String -> Body -> Physics.Body.Body BodyData.Data
 getDefaultBody myId body =
-    case body.id of
-        Just id ->
+    case body.class of
+        NPC ->
             Physics.Body.cylinder
                 (Cylinder3d.centeredOn
                     Point3d.origin
@@ -148,14 +148,15 @@ getDefaultBody myId body =
                 )
                 { mesh = WebGL.triangles []
                 , class =
-                    if id == myId then
+                    if body.id == Just myId then
                         Me
 
                     else
                         body.class
                 }
+                |> Physics.Body.withDamping { linear = 0.0, angular = 1.0 }
 
-        Nothing ->
+        _ ->
             Physics.Body.sphere
                 (Sphere3d.atOrigin (Length.feet 1))
                 { mesh = WebGL.triangles [], class = BodyData.Test }
