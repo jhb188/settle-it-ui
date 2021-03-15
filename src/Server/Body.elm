@@ -7,6 +7,7 @@ import Cylinder3d
 import Direction3d
 import Duration
 import Force
+import Frame3d
 import Json.Decode
 import Length
 import Mass
@@ -90,11 +91,19 @@ physicsBodiesDecoder myId =
 toPhysicsBody : String -> Body -> Physics.Body.Body BodyData.Data
 toPhysicsBody myId body =
     let
-        physicsBody =
+        unrotatedPhysicsBody =
             getDefaultBody myId body
                 |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams body.mass))
                 |> Physics.Body.translateBy (Vector3d.meters body.translation.x body.translation.y body.translation.z)
-                |> Physics.Body.rotateAround Axis3d.z (Angle.degrees body.rotation.z)
+
+        frame =
+            Physics.Body.frame unrotatedPhysicsBody
+
+        rotationAxis =
+            Frame3d.zAxis frame |> Axis3d.placeIn Frame3d.atOrigin
+
+        physicsBody =
+            Physics.Body.rotateAround rotationAxis (Angle.degrees body.rotation.z) unrotatedPhysicsBody
 
         linearVelocityCoords =
             body.linearVelocity

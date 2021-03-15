@@ -23,10 +23,8 @@ import Length
 import List
 import List.Extra
 import Mass
-import Math.Matrix4 exposing (Mat4)
 import Math.Vector2 as Vec2 exposing (Vec2, vec2)
 import Physics.Body
-import Physics.Contact
 import Physics.Coordinates
 import Physics.World
 import Pixels
@@ -45,6 +43,11 @@ import Viewpoint3d
 import WebGL
 
 
+
+-- globally enable/disable client physics simulations for dev purposes
+
+
+useClientPhysics : Bool
 useClientPhysics =
     True
 
@@ -93,30 +96,12 @@ type Msg
     | GameUpdated Json.Encode.Value
 
 
-
--- wall1 =
---     Block3d.from
---         (Point3d.meters -31 -31 0)
---         (Point3d.meters -30 31 1)
--- wall2 =
---     Block3d.rotateAround Axis3d.z (Angle.degrees 90) wall1
--- wall3 =
---     Block3d.rotateAround Axis3d.z (Angle.degrees 90) wall2
--- wall4 =
---     Block3d.rotateAround Axis3d.z (Angle.degrees 90) wall3
-
-
-testBall =
-    Physics.Body.sphere (Sphere3d.atOrigin (Length.feet 1)) { mesh = WebGL.triangles [], class = Test }
-        |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams 10))
-        |> Physics.Body.withDamping { linear = 0.1, angular = 0.1 }
-        |> Physics.Body.moveTo (Point3d.meters 0 0 10)
-
-
+fovAngle : Angle.Angle
 fovAngle =
     Angle.degrees 30
 
 
+floor : Physics.Body.Body BodyData.Data
 floor =
     Physics.Body.plane { mesh = WebGL.triangles [], class = Floor }
 
@@ -128,10 +113,6 @@ initWorld =
             (Acceleration.gees 1)
             Direction3d.negativeZ
         |> Physics.World.add floor
-
-
-
--- |> Physics.World.add testBall
 
 
 updateClass :
@@ -180,11 +161,6 @@ getEyePoint me =
         |> Point3d.translateBy (Vector3d.meters 0 0 0.5)
 
 
-getClass : Physics.Body.Body Data -> Class
-getClass =
-    Physics.Body.data >> .class
-
-
 getLookAxis : GameState -> Axis3d.Axis3d Length.Meters Physics.Coordinates.WorldCoordinates
 getLookAxis { viewSize, camera } =
     let
@@ -198,29 +174,6 @@ getLookAxis { viewSize, camera } =
             (Point2d.pixels viewSize viewSize)
         )
         (Point2d.pixels screenFocusedPoint screenFocusedPoint)
-
-
-getInitialFocalPoint : Point3d.Point3d Length.Meters Physics.Coordinates.WorldCoordinates -> Point3d.Point3d Length.Meters Physics.Coordinates.WorldCoordinates
-getInitialFocalPoint eyePoint =
-    Point3d.xyz (Length.meters 0) (Length.meters 0) (Point3d.zCoordinate eyePoint)
-
-
-amIOnTheFloor : Physics.World.World Data -> Bool
-amIOnTheFloor =
-    Physics.World.contacts
-        >> List.map (Physics.Contact.bodies >> Tuple.mapBoth getClass getClass)
-        >> List.any
-            (\bodies ->
-                case bodies of
-                    ( Me, Floor ) ->
-                        True
-
-                    ( Floor, Me ) ->
-                        True
-
-                    _ ->
-                        False
-            )
 
 
 atRest : Physics.Body.Body Data -> Bool
@@ -281,23 +234,20 @@ initPlaying playerId { bodies, lastUpdated } =
         world =
             addBodies bodies initWorld
 
-        focalPoint =
-            Point3d.origin
-
-        eyePoint =
+        ( focalPoint, eyePoint ) =
             case getMe world of
                 Just me ->
-                    getEyePoint me
+                    ( getInitialFocalPoint me, getEyePoint me )
 
                 Nothing ->
-                    Point3d.origin
+                    ( Point3d.origin, Point3d.origin )
 
         camera =
             Camera3d.perspective
                 { viewpoint =
                     Viewpoint3d.lookAt
                         { eyePoint = eyePoint
-                        , focalPoint = getInitialFocalPoint eyePoint
+                        , focalPoint = focalPoint
                         , upDirection = Direction3d.positiveZ
                         }
                 , verticalFieldOfView = fovAngle
@@ -323,9 +273,19 @@ initPlaying playerId { bodies, lastUpdated } =
     )
 
 
-movementScale : Float
-movementScale =
-    0.05
+getInitialFocalPoint : Physics.Body.Body BodyData.Data -> Point3d.Point3d Length.Meters Physics.Coordinates.WorldCoordinates
+getInitialFocalPoint me =
+    let
+        myFrame =
+            Physics.Body.frame me
+
+        eyePoint =
+            getEyePoint me
+
+        lookAxis =
+            myFrame |> Frame3d.yAxis |> Axis3d.moveTo eyePoint
+    in
+    Point3d.along lookAxis (Length.meters 1)
 
 
 jumpThresholdMs : Float
@@ -344,7 +304,7 @@ updateMovement ms model =
         Just relativePos ->
             let
                 direction =
-                    Vec2.direction model.movementPadOrigin relativePos
+                    Vec2.direction relativePos model.movementPadOrigin
 
                 { x, y } =
                     Vec2.toRecord <| direction
@@ -362,11 +322,13 @@ updateMovement ms model =
                     case ( getMe model.world, coordsAreInvalid ) of
                         ( Just me, False ) ->
                             let
-                                frame =
+                                myFrame =
                                     Physics.Body.frame me
 
                                 bodyFrameMoved =
-                                    Frame3d.translateBy (Vector3d.meters xMovement yMovement 0) frame
+                                    myFrame
+                                        |> Frame3d.translateAlongOwn Frame3d.yAxis (Length.meters yMovement)
+                                        |> Frame3d.translateAlongOwn Frame3d.xAxis (Length.meters xMovement)
 
                                 nextOriginPoint =
                                     Frame3d.placeIn Frame3d.atOrigin bodyFrameMoved |> Frame3d.originPoint
@@ -529,8 +491,9 @@ getNextSimulatedGameState ms gameState =
     }
 
 
+serverUpdateErrorThresholdMs : Int
 serverUpdateErrorThresholdMs =
-    1000
+    500
 
 
 updateGameState : Msg -> GameState -> ( GameState, Cmd Msg )
@@ -616,36 +579,8 @@ updateGameState msg model =
                 nextModel =
                     { model | viewSize = shortDimension - 20.0 }
 
-                correctPlayerRotation player =
-                    let
-                        playerFrame =
-                            Physics.Body.frame player
-
-                        currentPlayerLookDirection =
-                            Axis3d.direction <| Frame3d.xAxis playerFrame
-
-                        currentCameraAxis =
-                            getLookAxis model
-
-                        desiredPlayerLookFrame =
-                            Frame3d.fromXAxis currentCameraAxis
-
-                        desiredPlayerLookNormalDirection =
-                            Axis3d.direction <| Frame3d.yAxis desiredPlayerLookFrame
-
-                        angleToDesiredDirection =
-                            Direction3d.angleFrom currentPlayerLookDirection desiredPlayerLookNormalDirection
-
-                        playerWithCorrectedOrientation =
-                            Physics.Body.rotateAround Axis3d.z angleToDesiredDirection player
-                    in
-                    playerWithCorrectedOrientation
-
-                nextWorld =
-                    updateMe correctPlayerRotation model.world
-
                 nextCamera =
-                    case getMe nextWorld of
+                    case getMe model.world of
                         Nothing ->
                             model.camera
 
@@ -658,13 +593,13 @@ updateGameState msg model =
                                 { viewpoint =
                                     Viewpoint3d.lookAt
                                         { eyePoint = eyePoint
-                                        , focalPoint = getInitialFocalPoint eyePoint
+                                        , focalPoint = getInitialFocalPoint me
                                         , upDirection = Direction3d.positiveZ
                                         }
                                 , verticalFieldOfView = fovAngle
                                 }
             in
-            ( { nextModel | world = nextWorld, camera = nextCamera }, Cmd.none )
+            ( { nextModel | camera = nextCamera }, Cmd.none )
 
         MovementPadDown newOrigin ->
             ( { model | movementPadOrigin = newOrigin, movementPadOffset = Just newOrigin }, Cmd.none )
@@ -818,7 +753,7 @@ view model =
                                                     Point3d.origin
                                                     Direction3d.z
                                                     { radius = Length.meters 0.2
-                                                    , length = Length.meters 1.0
+                                                    , length = Length.meters 2.0
                                                     }
                                                 )
                                                 |> Scene3d.placeIn bodyFrame
