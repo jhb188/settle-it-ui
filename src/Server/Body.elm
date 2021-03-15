@@ -2,7 +2,7 @@ module Server.Body exposing (..)
 
 import Angle
 import Axis3d
-import BodyData
+import BodyData exposing (Class(..))
 import Cylinder3d
 import Direction3d
 import Duration
@@ -29,6 +29,7 @@ type alias Body =
     , linearVelocity : Vector
     , angularVelocity : Vector
     , mass : Float
+    , class : Class
     }
 
 
@@ -40,15 +41,33 @@ vectorDecoder =
         (Json.Decode.field "z" Json.Decode.float)
 
 
+classDecoder : Json.Decode.Decoder Class
+classDecoder =
+    Json.Decode.string
+        |> Json.Decode.map
+            (\class ->
+                case class of
+                    "player" ->
+                        NPC
+
+                    "bullet" ->
+                        Bullet
+
+                    _ ->
+                        Test
+            )
+
+
 decoder : Json.Decode.Decoder Body
 decoder =
-    Json.Decode.map6 Body
+    Json.Decode.map7 Body
         (Json.Decode.field "id" (Json.Decode.maybe Json.Decode.string))
         (Json.Decode.field "translation" vectorDecoder)
         (Json.Decode.field "rotation" vectorDecoder)
         (Json.Decode.field "linvel" vectorDecoder)
         (Json.Decode.field "angvel" vectorDecoder)
         (Json.Decode.field "mass" Json.Decode.float)
+        (Json.Decode.field "class" classDecoder)
 
 
 bodiesDecoder : Json.Decode.Decoder (List Body)
@@ -121,10 +140,10 @@ getDefaultBody myId body =
                 { mesh = WebGL.triangles []
                 , class =
                     if id == myId then
-                        BodyData.Me
+                        Me
 
                     else
-                        BodyData.NPC
+                        body.class
                 }
 
         Nothing ->
