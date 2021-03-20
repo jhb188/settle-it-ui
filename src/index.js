@@ -7,12 +7,11 @@ const playerIdKey = "playerId";
 
 const envApiBaseUrl = process.env.ELM_APP_API_BASE_URL;
 
-const serverBaseUrl = envApiBaseUrl || "192.168.1.14:4000";
+const serverBaseUrl = envApiBaseUrl || "settle-it.gigalixirapp.com";
 
 const useHttps = !envApiBaseUrl;
 
-// const socketProtocol = useHttps ? "wss" : "ws";
-const socketProtocol = "ws"
+const socketProtocol = useHttps ? "wss" : "ws";
 
 const socket = new Socket(`${socketProtocol}://${serverBaseUrl}/socket`, {});
 socket.connect();
