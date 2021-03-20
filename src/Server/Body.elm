@@ -31,6 +31,7 @@ type alias Body =
     , angularVelocity : Vector
     , mass : Float
     , class : Class
+    , hp : Int
     }
 
 
@@ -61,7 +62,7 @@ classDecoder =
 
 decoder : Json.Decode.Decoder Body
 decoder =
-    Json.Decode.map7 Body
+    Json.Decode.map8 Body
         (Json.Decode.field "id" (Json.Decode.maybe Json.Decode.string))
         (Json.Decode.field "translation" vectorDecoder)
         (Json.Decode.field "rotation" vectorDecoder)
@@ -69,6 +70,7 @@ decoder =
         (Json.Decode.field "angvel" vectorDecoder)
         (Json.Decode.field "mass" Json.Decode.float)
         (Json.Decode.field "class" classDecoder)
+        (Json.Decode.field "hp" Json.Decode.int)
 
 
 bodiesDecoder : Json.Decode.Decoder (List Body)
@@ -155,6 +157,12 @@ getDefaultBody myId body =
                         body.class
                 }
                 |> Physics.Body.withDamping { linear = 0.0, angular = 1.0 }
+
+        Bullet ->
+            Physics.Body.sphere
+                (Sphere3d.atOrigin (Length.centimeters 5))
+                { mesh = WebGL.triangles [], class = BodyData.Bullet }
+                |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams 50))
 
         _ ->
             Physics.Body.sphere

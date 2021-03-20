@@ -42,12 +42,12 @@ import WebGL
 
 
 
--- globally enable/disable client physics simulations for dev purposes
+-- start performing actions before they are approved by the server
 
 
-useClientPhysics : Bool
-useClientPhysics =
-    True
+isClientOptimistic : Bool
+isClientOptimistic =
+    False
 
 
 type alias Flags =
@@ -67,8 +67,10 @@ type alias GameState =
     , world : Physics.World.World Data
     , lastUpdated : Int
     , newServerState : Maybe Json.Encode.Value
-    , msSinceLastServerUpdateApplied : Int
+    , msSinceLastServerUpdateApplied : Float
     , cameraXRotationAngle : Float
+    , shouldJumpNextFrame : Bool
+    , shouldShootNextFrame : Bool
     }
 
 
@@ -174,32 +176,6 @@ getLookAxis gameState =
             Frame3d.yAxis Frame3d.atOrigin
 
 
-atRest : Physics.Body.Body Data -> Bool
-atRest body =
-    let
-        { x, y, z } =
-            Vector3d.unwrap <| Physics.Body.velocity body
-    in
-    ( round x, round y, round z ) == ( 0, 0, 0 )
-
-
-removeStaleBullets : Physics.World.World Data -> Physics.World.World Data
-removeStaleBullets =
-    Physics.World.keepIf
-        (\body ->
-            let
-                data =
-                    Physics.Body.data body
-            in
-            case data.class of
-                Bullet ->
-                    not <| atRest body
-
-                _ ->
-                    True
-        )
-
-
 jumpImpulse =
     Force.newtons 2400 |> Quantity.times (Duration.seconds 0.15)
 
@@ -244,26 +220,13 @@ initPlaying playerId { bodies, lastUpdated } =
         , world = world
         , lastUpdated = lastUpdated
         , newServerState = Nothing
-        , msSinceLastServerUpdateApplied = 0
+        , msSinceLastServerUpdateApplied = 0.0
         , cameraXRotationAngle = 0.0
+        , shouldJumpNextFrame = False
+        , shouldShootNextFrame = False
         }
     , Task.perform ViewportChanged Browser.Dom.getViewport
     )
-
-
-getInitialFocalPoint : Physics.Body.Body BodyData.Data -> Point3d.Point3d Length.Meters Physics.Coordinates.WorldCoordinates
-getInitialFocalPoint me =
-    let
-        myFrame =
-            Physics.Body.frame me
-
-        eyePoint =
-            getEyePoint me
-
-        lookAxis =
-            myFrame |> Frame3d.yAxis |> Axis3d.moveTo eyePoint
-    in
-    Point3d.along lookAxis (Length.meters 1)
 
 
 jumpThresholdMs : Float
@@ -288,10 +251,10 @@ updateMovement ms gameState =
                     Vec2.toRecord <| direction
 
                 xMovement =
-                    x / 10
+                    x / 5
 
                 yMovement =
-                    y / 10
+                    y / 5
 
                 coordsAreInvalid =
                     isNaN x || isNaN y
@@ -310,9 +273,16 @@ updateMovement ms gameState =
 
                                 nextOriginPoint =
                                     Frame3d.placeIn Frame3d.atOrigin bodyFrameMoved |> Frame3d.originPoint
+
+                                nextWorld =
+                                    if isClientOptimistic then
+                                        updateMe (Physics.Body.moveTo nextOriginPoint) gameState.world
+
+                                    else
+                                        gameState.world
                             in
                             ( { gameState
-                                | world = updateMe (Physics.Body.moveTo nextOriginPoint) gameState.world
+                                | world = nextWorld
                               }
                             , requestMove
                                 { playerId = gameState.playerId
@@ -382,7 +352,12 @@ updateTarget ms gameState =
                     ( { gameState
                         | cameraXRotationAngle = gameState.cameraXRotationAngle - xRotationDeg
                         , targetPadHeldMs = gameState.targetPadHeldMs + ms
-                        , world = nextWorld
+                        , world =
+                            if isClientOptimistic then
+                                nextWorld
+
+                            else
+                                gameState.world
                       }
                     , requestRotate { playerId = gameState.playerId, angle = newRotationAngleNormalized }
                     )
@@ -392,6 +367,78 @@ updateTarget ms gameState =
 
         Nothing ->
             ( gameState, Cmd.none )
+
+
+applyActions : GameState -> ( GameState, Cmd Msg )
+applyActions gameState =
+    let
+        ( gameStateWithJump, jumpCmd ) =
+            if gameState.shouldJumpNextFrame then
+                applyJump gameState
+
+            else
+                ( gameState, Cmd.none )
+
+        ( gameStateWithShoot, shootCmd ) =
+            if gameState.shouldShootNextFrame then
+                applyShoot gameStateWithJump
+
+            else
+                ( gameStateWithJump, Cmd.none )
+    in
+    ( { gameStateWithShoot | shouldJumpNextFrame = False, shouldShootNextFrame = False }, Cmd.batch [ jumpCmd, shootCmd ] )
+
+
+applyJump : GameState -> ( GameState, Cmd Msg )
+applyJump gameState =
+    ( { gameState
+        | world =
+            if isClientOptimistic then
+                updateMe jump gameState.world
+
+            else
+                gameState.world
+      }
+    , requestJump gameState.playerId
+    )
+
+
+applyShoot : GameState -> ( GameState, Cmd Msg )
+applyShoot gameState =
+    let
+        projectileOrientation =
+            getLookAxis gameState
+
+        projectileStartPoint =
+            Point3d.along projectileOrientation (Length.centimeters 25)
+
+        projectile =
+            Physics.Body.particle { class = Bullet, mesh = WebGL.triangles [] }
+                |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams 50))
+                |> Physics.Body.moveTo projectileStartPoint
+                |> Physics.Body.applyImpulse
+                    (Force.newtons 250 |> Quantity.times (Duration.milliseconds 16.667))
+                    (Axis3d.direction projectileOrientation)
+                    projectileStartPoint
+
+        nextWorld =
+            if isClientOptimistic then
+                Physics.World.add projectile gameState.world
+
+            else
+                gameState.world
+    in
+    ( { gameState | world = nextWorld }
+    , requestShoot
+        { playerId = gameState.playerId
+        , position = Point3d.toRecord Length.inMeters projectileStartPoint
+        , linvel =
+            projectile
+                |> Physics.Body.velocity
+                |> Vector3d.for (Duration.seconds 1)
+                |> Vector3d.toRecord Length.inMeters
+        }
+    )
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -420,12 +467,7 @@ update msg model =
 
 simulatePhysics : Physics.World.World Data -> Float -> Physics.World.World Data
 simulatePhysics world ms =
-    if useClientPhysics then
-        Physics.World.simulate (Duration.milliseconds ms) world
-            |> removeStaleBullets
-
-    else
-        world
+    Physics.World.simulate (Duration.milliseconds ms) world
 
 
 getNextSimulatedGameState : Float -> GameState -> GameState
@@ -433,13 +475,13 @@ getNextSimulatedGameState ms gameState =
     { gameState
         | world = simulatePhysics gameState.world ms
         , newServerState = Nothing
-        , msSinceLastServerUpdateApplied = gameState.msSinceLastServerUpdateApplied + ceiling ms
+        , msSinceLastServerUpdateApplied = gameState.msSinceLastServerUpdateApplied + ms
     }
 
 
-serverUpdateErrorThresholdMs : Int
+serverUpdateErrorThresholdMs : Float
 serverUpdateErrorThresholdMs =
-    500
+    1000
 
 
 updateGameState : Msg -> GameState -> ( GameState, Cmd Msg )
@@ -457,7 +499,7 @@ updateGameState msg gameState =
                                 Ok { bodies, lastUpdated } ->
                                     if
                                         (lastUpdated > gameState.lastUpdated)
-                                            && (abs (lastUpdated - (gameState.lastUpdated + gameState.msSinceLastServerUpdateApplied)) < serverUpdateErrorThresholdMs)
+                                            && (abs (toFloat lastUpdated - (toFloat gameState.lastUpdated + gameState.msSinceLastServerUpdateApplied)) < serverUpdateErrorThresholdMs)
                                     then
                                         { gameState
                                             | world = addBodies bodies initWorld
@@ -477,8 +519,11 @@ updateGameState msg gameState =
 
                 ( nextModelRotationApplied, rotationCmds ) =
                     nextModelMovementApplied |> updateTarget ms
+
+                ( nextModelActionsApplied, actionCmds ) =
+                    applyActions nextModelRotationApplied
             in
-            ( nextModelRotationApplied, Cmd.batch [ movementCmds, rotationCmds ] )
+            ( nextModelActionsApplied, Cmd.batch [ movementCmds, rotationCmds, actionCmds ] )
 
         GameUpdated gameUpdateData ->
             ( { gameState | newServerState = Just gameUpdateData }, Cmd.none )
@@ -512,16 +557,9 @@ updateGameState msg gameState =
                         | movementPadOffset = Nothing
                         , movementPadHeldMs = 0
                     }
-
-                { world } =
-                    gameState
             in
             if gameState.movementPadHeldMs < jumpThresholdMs then
-                ( { nextModel
-                    | world = updateMe jump world
-                  }
-                , requestJump gameState.playerId
-                )
+                ( { nextModel | shouldJumpNextFrame = True }, Cmd.none )
 
             else
                 ( nextModel, Cmd.none )
@@ -535,28 +573,7 @@ updateGameState msg gameState =
                     }
             in
             if gameState.targetPadHeldMs < shootThresholdMs then
-                let
-                    projectileOrientation =
-                        getLookAxis gameState
-
-                    projectileStartPoint =
-                        Axis3d.originPoint projectileOrientation
-
-                    projectile =
-                        Physics.Body.particle { class = Bullet, mesh = WebGL.triangles [] }
-                            |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams 50))
-                            |> Physics.Body.moveTo projectileStartPoint
-                            |> Physics.Body.applyForce
-                                (Force.newtons 250)
-                                (Axis3d.direction projectileOrientation)
-                                projectileStartPoint
-
-                    nextWorld =
-                        Physics.World.add projectile gameState.world
-                in
-                ( { nextModel | world = nextWorld }
-                , Cmd.none
-                )
+                ( { nextModel | shouldShootNextFrame = True }, Cmd.none )
 
             else
                 ( nextModel, Cmd.none )
@@ -571,12 +588,13 @@ viewPad :
     -> Html Msg
 viewPad viewSize onDown onMove onUp attrs =
     Html.div
-        ([ Html.Attributes.style "touch-action" "manipulation"
+        ([ Html.Attributes.style "touch-action" "none"
          , Html.Attributes.width (round viewSize)
          , Html.Attributes.style "height" "0"
          , Html.Attributes.style "padding-bottom" "50%"
          , Html.Attributes.style "flex" "1"
-         , Html.Attributes.style "margin" "5px"
+
+         --  , Html.Attributes.style "margin" "5px"
          , Pointer.onDown (\event -> onDown <| tupleToVec2 event.pointer.offsetPos)
          , Pointer.onMove (\event -> onMove <| tupleToVec2 event.pointer.offsetPos)
          , Pointer.onUp (always onUp)
@@ -644,7 +662,7 @@ view model =
                                                 (Cylinder3d.centeredOn
                                                     Point3d.origin
                                                     Direction3d.z
-                                                    { radius = Length.meters 0.2
+                                                    { radius = Length.meters 0.5
                                                     , length = Length.meters 2.0
                                                     }
                                                 )
@@ -780,6 +798,9 @@ port requestMove : { playerId : String, x : Float, y : Float } -> Cmd msg
 
 
 port requestRotate : { playerId : String, angle : Float } -> Cmd msg
+
+
+port requestShoot : { playerId : String, position : { x : Float, y : Float, z : Float }, linvel : { x : Float, y : Float, z : Float } } -> Cmd msg
 
 
 port gameUpdated : (Json.Encode.Value -> msg) -> Sub msg

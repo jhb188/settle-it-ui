@@ -72,6 +72,10 @@ app.ports.requestRotate.subscribe(({playerId, angle}) => {
   gameChannel.push("player_rotate", {player_id: playerId, angle: angle});
 });
 
+app.ports.requestShoot.subscribe(({playerId, position, linvel}) => {
+  gameChannel.push("player_shoot", { player_id: playerId, position, linvel});
+});
+
 // app.ports.startGame.subscribe((data) => {
 //   gameChannel.push("start_game", data);
 // });
