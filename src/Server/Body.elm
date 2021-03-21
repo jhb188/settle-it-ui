@@ -24,7 +24,7 @@ type alias Vector =
 
 
 type alias Body =
-    { id : Maybe String
+    { id : String
     , translation : Vector
     , rotation : Vector
     , linearVelocity : Vector
@@ -63,7 +63,7 @@ classDecoder =
 decoder : Json.Decode.Decoder Body
 decoder =
     Json.Decode.map8 Body
-        (Json.Decode.field "id" (Json.Decode.maybe Json.Decode.string))
+        (Json.Decode.field "id" Json.Decode.string)
         (Json.Decode.field "translation" vectorDecoder)
         (Json.Decode.field "rotation" vectorDecoder)
         (Json.Decode.field "linvel" vectorDecoder)
@@ -150,7 +150,7 @@ getDefaultBody myId body =
                 )
                 { mesh = WebGL.triangles []
                 , class =
-                    if body.id == Just myId then
+                    if body.id == myId then
                         Me
 
                     else
