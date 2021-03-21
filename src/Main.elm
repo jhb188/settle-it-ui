@@ -3,6 +3,7 @@ port module Main exposing (main)
 import Acceleration
 import Angle
 import Axis3d
+import Block3d
 import BodyData exposing (Class(..), Data)
 import Browser
 import Browser.Dom
@@ -32,6 +33,7 @@ import Point3d
 import Quantity
 import Scene3d
 import Scene3d.Material
+import Scene3d.Mesh
 import Server.State
 import Sphere3d
 import String
@@ -69,6 +71,7 @@ type alias GameState =
     , newServerState : Maybe Json.Encode.Value
     , msSinceLastServerUpdateApplied : Float
     , cameraXRotationAngle : Float
+    , cameraZRotationAngle : Float
     , shouldJumpNextFrame : Bool
     , shouldShootNextFrame : Bool
     }
@@ -102,7 +105,7 @@ fovAngle =
 
 floor : Physics.Body.Body BodyData.Data
 floor =
-    Physics.Body.plane { mesh = WebGL.triangles [], class = Floor }
+    Physics.Body.plane { mesh = WebGL.triangles [], class = Floor, hp = 0 }
 
 
 initWorld : Physics.World.World Data
@@ -164,8 +167,10 @@ getLookAxis : GameState -> Axis3d.Axis3d Length.Meters Physics.Coordinates.World
 getLookAxis gameState =
     case getMe gameState.world of
         Just me ->
-            me
-                |> Physics.Body.frame
+            Frame3d.atOrigin
+                |> Frame3d.rotateAroundOwn
+                    Frame3d.zAxis
+                    (Angle.degrees gameState.cameraZRotationAngle)
                 |> Frame3d.rotateAroundOwn
                     Frame3d.xAxis
                     (Angle.degrees gameState.cameraXRotationAngle)
@@ -178,6 +183,15 @@ getLookAxis gameState =
 
 jumpImpulse =
     Force.newtons 2400 |> Quantity.times (Duration.seconds 0.15)
+
+
+isAlive : Physics.Body.Body Data -> Bool
+isAlive body =
+    let
+        data =
+            Physics.Body.data body
+    in
+    data.hp > 0
 
 
 jump : Physics.Body.Body Data -> Physics.Body.Body Data
@@ -207,6 +221,25 @@ initPlaying playerId { bodies, lastUpdated } =
     let
         world =
             addBodies bodies initWorld
+
+        initialCameraZRotationAngle =
+            case getMe world of
+                Just me ->
+                    let
+                        myLookDirection =
+                            Frame3d.yDirection <| Physics.Body.frame me
+
+                        myRotationAngle =
+                            Direction3d.angleFrom (Frame3d.yDirection Frame3d.atOrigin) myLookDirection |> Angle.inDegrees
+                    in
+                    if Direction3d.xComponent myLookDirection > 0 then
+                        360.0 - myRotationAngle
+
+                    else
+                        myRotationAngle
+
+                Nothing ->
+                    0
     in
     ( Playing
         { playerId = playerId
@@ -222,6 +255,7 @@ initPlaying playerId { bodies, lastUpdated } =
         , newServerState = Nothing
         , msSinceLastServerUpdateApplied = 0.0
         , cameraXRotationAngle = 0.0
+        , cameraZRotationAngle = initialCameraZRotationAngle
         , shouldJumpNextFrame = False
         , shouldShootNextFrame = False
         }
@@ -239,8 +273,8 @@ shootThresholdMs =
     300.0
 
 
-updateMovement : Float -> GameState -> ( GameState, Cmd Msg )
-updateMovement ms gameState =
+updateMovement : Float -> Maybe (Physics.Body.Body BodyData.Data) -> GameState -> ( GameState, Cmd Msg )
+updateMovement ms maybeMe gameState =
     case gameState.movementPadOffset of
         Just relativePos ->
             let
@@ -251,35 +285,47 @@ updateMovement ms gameState =
                     Vec2.toRecord <| direction
 
                 xMovement =
-                    x / 5
+                    x / 10
 
                 yMovement =
-                    y / 5
+                    y / 10
 
                 coordsAreInvalid =
                     isNaN x || isNaN y
 
                 ( gameStateWithUpdatedWorld, cmds ) =
-                    case ( getMe gameState.world, coordsAreInvalid ) of
+                    case ( maybeMe, coordsAreInvalid ) of
                         ( Just me, False ) ->
                             let
                                 myFrame =
                                     Physics.Body.frame me
 
-                                bodyFrameMoved =
+                                maybeNextZ =
+                                    getMe gameState.world |> Maybe.map (Physics.Body.originPoint >> Point3d.zCoordinate >> Length.inMeters)
+
+                                nextOrigin =
                                     myFrame
                                         |> Frame3d.translateAlongOwn Frame3d.yAxis (Length.meters yMovement)
                                         |> Frame3d.translateAlongOwn Frame3d.xAxis (Length.meters xMovement)
+                                        |> Frame3d.originPoint
+
+                                bodyFrameMoved =
+                                    case maybeNextZ of
+                                        Just z ->
+                                            let
+                                                nextOriginCoords =
+                                                    Point3d.toMeters nextOrigin
+                                            in
+                                            Frame3d.moveTo (Point3d.fromMeters { x = nextOriginCoords.x, y = nextOriginCoords.y, z = z }) myFrame
+
+                                        Nothing ->
+                                            Frame3d.moveTo nextOrigin myFrame
 
                                 nextOriginPoint =
                                     Frame3d.placeIn Frame3d.atOrigin bodyFrameMoved |> Frame3d.originPoint
 
                                 nextWorld =
-                                    if isClientOptimistic then
-                                        updateMe (Physics.Body.moveTo nextOriginPoint) gameState.world
-
-                                    else
-                                        gameState.world
+                                    updateMe (Physics.Body.moveTo nextOriginPoint) gameState.world
                             in
                             ( { gameState
                                 | world = nextWorld
@@ -317,76 +363,67 @@ updateTarget ms gameState =
                 zRotationDeg =
                     x / 2
 
-                rotateMe me =
-                    let
-                        myFrame =
-                            Physics.Body.frame me
-
-                        rotationAxis =
-                            Frame3d.zAxis myFrame |> Axis3d.placeIn Frame3d.atOrigin
-                    in
-                    Physics.Body.rotateAround rotationAxis (Angle.degrees zRotationDeg) me
-
-                nextWorld =
-                    updateMe rotateMe gameState.world
-
                 coordsAreInvalid =
                     isNaN x || isNaN y
             in
-            case ( getMe nextWorld, coordsAreInvalid ) of
-                ( Just updatedMe, False ) ->
-                    let
-                        myFrameLookDirection =
-                            updatedMe |> Physics.Body.frame |> Frame3d.yDirection
+            if coordsAreInvalid then
+                ( gameState, Cmd.none )
 
-                        newRotationAngle =
-                            Direction3d.angleFrom (Frame3d.yDirection Frame3d.atOrigin) myFrameLookDirection |> Angle.inDegrees
+            else
+                let
+                    newZRotationAngle =
+                        gameState.cameraZRotationAngle + zRotationDeg
 
-                        newRotationAngleNormalized =
-                            if Direction3d.xComponent myFrameLookDirection > 0 then
-                                360.0 - newRotationAngle
+                    newZRotationAngleNormalized =
+                        if newZRotationAngle > 360.0 then
+                            360.0 - newZRotationAngle
 
-                            else
-                                newRotationAngle
-                    in
-                    ( { gameState
-                        | cameraXRotationAngle = gameState.cameraXRotationAngle - xRotationDeg
-                        , targetPadHeldMs = gameState.targetPadHeldMs + ms
-                        , world =
-                            if isClientOptimistic then
-                                nextWorld
-
-                            else
-                                gameState.world
-                      }
-                    , requestRotate { playerId = gameState.playerId, angle = newRotationAngleNormalized }
-                    )
-
-                _ ->
-                    ( gameState, Cmd.none )
+                        else
+                            newZRotationAngle
+                in
+                ( { gameState
+                    | cameraXRotationAngle = gameState.cameraXRotationAngle - xRotationDeg
+                    , cameraZRotationAngle = newZRotationAngleNormalized
+                    , targetPadHeldMs = gameState.targetPadHeldMs + ms
+                  }
+                , requestRotate { playerId = gameState.playerId, angle = newZRotationAngleNormalized }
+                )
 
         Nothing ->
             ( gameState, Cmd.none )
 
 
-applyActions : GameState -> ( GameState, Cmd Msg )
-applyActions gameState =
+applyActions : Maybe (Physics.Body.Body BodyData.Data) -> GameState -> Float -> ( GameState, Cmd Msg )
+applyActions previousMe gameState ms =
     let
-        ( gameStateWithJump, jumpCmd ) =
-            if gameState.shouldJumpNextFrame then
-                applyJump gameState
+        playerIsAlive =
+            case getMe gameState.world of
+                Nothing ->
+                    False
+
+                Just me ->
+                    isAlive me
+
+        applyIf cond f gs =
+            if cond then
+                f gs
 
             else
-                ( gameState, Cmd.none )
+                ( gs, Cmd.none )
 
-        ( gameStateWithShoot, shootCmd ) =
-            if gameState.shouldShootNextFrame then
-                applyShoot gameStateWithJump
+        ( gameStateMovementApplied, movementCmds ) =
+            applyIf playerIsAlive (updateMovement ms previousMe) gameState
 
-            else
-                ( gameStateWithJump, Cmd.none )
+        ( gameStateRotationApplied, rotationCmds ) =
+            updateTarget ms gameStateMovementApplied
+
+        ( gameStateJumpApplied, jumpCmd ) =
+            applyIf (gameState.shouldJumpNextFrame && playerIsAlive) applyJump gameStateRotationApplied
+
+        ( gameStateShootApplied, shootCmd ) =
+            applyIf (gameState.shouldShootNextFrame && playerIsAlive) applyShoot gameStateJumpApplied
     in
-    ( { gameStateWithShoot | shouldJumpNextFrame = False, shouldShootNextFrame = False }, Cmd.batch [ jumpCmd, shootCmd ] )
+    ( { gameStateShootApplied | shouldJumpNextFrame = False, shouldShootNextFrame = False }, Cmd.batch [ movementCmds, rotationCmds, jumpCmd, shootCmd ] )
 
 
 applyJump : GameState -> ( GameState, Cmd Msg )
@@ -413,11 +450,11 @@ applyShoot gameState =
             Point3d.along projectileOrientation (Length.centimeters 25)
 
         projectile =
-            Physics.Body.particle { class = Bullet, mesh = WebGL.triangles [] }
+            Physics.Body.particle { class = Bullet, mesh = WebGL.triangles [], hp = 0 }
                 |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams 50))
                 |> Physics.Body.moveTo projectileStartPoint
                 |> Physics.Body.applyImpulse
-                    (Force.newtons 250 |> Quantity.times (Duration.milliseconds 16.667))
+                    (Force.newtons 200 |> Quantity.times (Duration.milliseconds 16.667))
                     (Axis3d.direction projectileOrientation)
                     projectileStartPoint
 
@@ -514,16 +551,10 @@ updateGameState msg gameState =
                         Nothing ->
                             getNextSimulatedGameState ms gameState
 
-                ( nextModelMovementApplied, movementCmds ) =
-                    updateMovement ms nextModel
-
-                ( nextModelRotationApplied, rotationCmds ) =
-                    nextModelMovementApplied |> updateTarget ms
-
-                ( nextModelActionsApplied, actionCmds ) =
-                    applyActions nextModelRotationApplied
+                ( nextModelActionsApplied, cmd ) =
+                    applyActions (getMe gameState.world) nextModel ms
             in
-            ( nextModelActionsApplied, Cmd.batch [ movementCmds, rotationCmds, actionCmds ] )
+            ( nextModelActionsApplied, cmd )
 
         GameUpdated gameUpdateData ->
             ( { gameState | newServerState = Just gameUpdateData }, Cmd.none )
@@ -588,13 +619,12 @@ viewPad :
     -> Html Msg
 viewPad viewSize onDown onMove onUp attrs =
     Html.div
-        ([ Html.Attributes.style "touch-action" "none"
+        ([ Html.Attributes.style "touch-action" "manipulation"
          , Html.Attributes.width (round viewSize)
          , Html.Attributes.style "height" "0"
          , Html.Attributes.style "padding-bottom" "50%"
          , Html.Attributes.style "flex" "1"
-
-         --  , Html.Attributes.style "margin" "5px"
+         , Html.Attributes.style "margin" "5px"
          , Pointer.onDown (\event -> onDown <| tupleToVec2 event.pointer.offsetPos)
          , Pointer.onMove (\event -> onMove <| tupleToVec2 event.pointer.offsetPos)
          , Pointer.onUp (always onUp)
@@ -609,11 +639,78 @@ tupleToVec2 ( x, y ) =
     vec2 x (negate y)
 
 
+viewHealthBar :
+    Physics.Body.Body BodyData.Data
+    -> Direction3d.Direction3d Physics.Coordinates.WorldCoordinates
+    -> Scene3d.Entity Physics.Coordinates.WorldCoordinates
+viewHealthBar body viewPointXDirection =
+    let
+        hp =
+            (Physics.Body.data >> .hp) body
+
+        hpBarLength =
+            2.0
+
+        healthBarCenter =
+            Point3d.translateIn Direction3d.z (Length.meters 1) <| getEyePoint body
+
+        healthBarOrigin =
+            Point3d.translateIn (Direction3d.reverse viewPointXDirection) (Length.meters (hpBarLength / 2.0)) healthBarCenter
+
+        healthBarAxis =
+            Axis3d.through healthBarOrigin viewPointXDirection
+
+        getPoint forHp =
+            Point3d.along healthBarAxis (Length.meters (toFloat forHp * hpBarLength / 10.0))
+
+        points remaining =
+            case remaining of
+                0 ->
+                    []
+
+                someHp ->
+                    getPoint someHp :: points (remaining - 1)
+
+        mesh =
+            Scene3d.Mesh.points { radius = Pixels.float 2 } (points hp)
+    in
+    Scene3d.mesh (Scene3d.Material.color Color.lightGreen) mesh
+
+
 view : Model -> Html Msg
 view model =
     case model of
         Playing gameState ->
             let
+                viewpoint =
+                    case getMe gameState.world of
+                        Just me ->
+                            let
+                                eyePoint =
+                                    getEyePoint me
+
+                                cameraAxis =
+                                    getLookAxis gameState
+
+                                focalPoint =
+                                    Point3d.along cameraAxis (Length.meters 1)
+                            in
+                            Viewpoint3d.lookAt
+                                { eyePoint = eyePoint
+                                , focalPoint = focalPoint
+                                , upDirection = Direction3d.positiveZ
+                                }
+
+                        Nothing ->
+                            Viewpoint3d.lookAt
+                                { eyePoint = Point3d.origin
+                                , focalPoint = Point3d.origin
+                                , upDirection = Direction3d.positiveZ
+                                }
+
+                camera =
+                    Camera3d.perspective { viewpoint = viewpoint, verticalFieldOfView = fovAngle }
+
                 entities =
                     gameState.world
                         |> Physics.World.bodies
@@ -623,10 +720,10 @@ view model =
                                     bodyFrame =
                                         Physics.Body.frame body
 
-                                    bodyClass =
-                                        .class <| Physics.Body.data body
+                                    bodyData =
+                                        Physics.Body.data body
                                 in
-                                case bodyClass of
+                                case bodyData.class of
                                     Test ->
                                         Just <|
                                             (Scene3d.sphereWithShadow
@@ -657,50 +754,33 @@ view model =
 
                                     NPC ->
                                         Just <|
-                                            (Scene3d.cylinderWithShadow
-                                                (Scene3d.Material.matte Color.green)
-                                                (Cylinder3d.centeredOn
-                                                    Point3d.origin
-                                                    Direction3d.z
-                                                    { radius = Length.meters 0.5
-                                                    , length = Length.meters 2.0
-                                                    }
-                                                )
-                                                |> Scene3d.placeIn bodyFrame
-                                            )
+                                            if bodyData.hp == 0 then
+                                                Scene3d.blockWithShadow
+                                                    (Scene3d.Material.matte Color.lightGray)
+                                                    (Block3d.centeredOn
+                                                        Frame3d.atOrigin
+                                                        ( Length.meters 1.25, Length.meters 0.5, Length.meters 2.0 )
+                                                    )
+                                                    |> Scene3d.placeIn bodyFrame
+
+                                            else
+                                                Scene3d.group
+                                                    [ Scene3d.cylinderWithShadow
+                                                        (Scene3d.Material.matte Color.green)
+                                                        (Cylinder3d.centeredOn
+                                                            Point3d.origin
+                                                            Direction3d.z
+                                                            { radius = Length.meters 0.5
+                                                            , length = Length.meters 2.0
+                                                            }
+                                                        )
+                                                        |> Scene3d.placeIn bodyFrame
+                                                    , viewHealthBar body (Viewpoint3d.xDirection viewpoint)
+                                                    ]
 
                                     _ ->
                                         Nothing
                             )
-
-                viewpoint =
-                    case getMe gameState.world of
-                        Just me ->
-                            let
-                                eyePoint =
-                                    getEyePoint me
-
-                                cameraAxis =
-                                    getLookAxis gameState
-
-                                focalPoint =
-                                    Point3d.along cameraAxis (Length.meters 1)
-                            in
-                            Viewpoint3d.lookAt
-                                { eyePoint = eyePoint
-                                , focalPoint = focalPoint
-                                , upDirection = Direction3d.positiveZ
-                                }
-
-                        Nothing ->
-                            Viewpoint3d.lookAt
-                                { eyePoint = Point3d.origin
-                                , focalPoint = Point3d.origin
-                                , upDirection = Direction3d.positiveZ
-                                }
-
-                camera =
-                    Camera3d.perspective { viewpoint = viewpoint, verticalFieldOfView = fovAngle }
             in
             Html.div
                 [ Html.Attributes.style "height" "100%"

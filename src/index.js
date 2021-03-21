@@ -86,15 +86,10 @@ window.onbeforeunload = () => {
 };
 
 // prevent zoom on doubletap
-let lastTouchEnd = 0;
 document.addEventListener(
   "touchend",
   (event) => {
-    const now = new Date().getTime();
-    if (now - lastTouchEnd <= 300) {
-      event.preventDefault();
-    }
-    lastTouchEnd = now;
+    event.preventDefault();
   },
   false
 );

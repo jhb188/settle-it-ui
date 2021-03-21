@@ -155,16 +155,17 @@ getDefaultBody myId body =
 
                     else
                         body.class
+                , hp = body.hp
                 }
                 |> Physics.Body.withDamping { linear = 0.0, angular = 1.0 }
 
         Bullet ->
             Physics.Body.sphere
                 (Sphere3d.atOrigin (Length.centimeters 5))
-                { mesh = WebGL.triangles [], class = BodyData.Bullet }
+                { mesh = WebGL.triangles [], class = BodyData.Bullet, hp = 0 }
                 |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams 50))
 
         _ ->
             Physics.Body.sphere
                 (Sphere3d.atOrigin (Length.feet 1))
-                { mesh = WebGL.triangles [], class = BodyData.Test }
+                { mesh = WebGL.triangles [], class = BodyData.Test, hp = 0 }

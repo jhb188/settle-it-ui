@@ -22,4 +22,5 @@ type Class
 type alias Data =
     { mesh : WebGL.Mesh Vertex
     , class : Class
+    , hp: Int
     }
