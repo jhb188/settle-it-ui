@@ -16,18 +16,10 @@ body {
   text-align: center;
   color: #293c4b;
   height: 100%;
-  touch-action: manipulation;
 }
 
 html {
   height: 100%;
-  -webkit-touch-callout: none;
-  -webkit-user-select: none;
-  -khtml-user-select: none;
-  -moz-user-select: none;
-  -ms-user-select: none;
-  user-select: none;
-  touch-action: manipulation;
 }
 
 h1 {

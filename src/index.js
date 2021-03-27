@@ -25,7 +25,17 @@ const uuidv4 = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
     const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
     return v.toString(16);
   }
-)
+);
+
+const generateGameCode = () => {
+  let result = "";
+  const characters = "abcdefghijklmnopqrstuvwxyz";
+  const charactersLength = characters.length;
+  for ( let i = 0; i < 4; i++ ) {
+     result += characters.charAt(Math.floor(Math.random() * charactersLength));
+  }
+  return result;
+}
 
 if (!playerId) {
   playerId = uuidv4();
@@ -49,14 +59,35 @@ const attachGameChannelListeners = (gc) => {
   });
 };
 
-app.ports.joinGame.subscribe(([gameId, playerId]) => {
-  gameChannel = socket.channel(`game:${gameId}`, playerId);
+app.ports.joinGame.subscribe(({gameId, playerId, topic}) => {
+  const joinPayload = topic ? {player_id: playerId, topic: topic} : {player_id: playerId};
+  const gameCode = (gameId || generateGameCode()).toLowerCase();
+
+  gameChannel = socket.channel(`game:${gameCode}`, joinPayload);
 
   attachGameChannelListeners(gameChannel);
 
-  gameChannel.join().receive("ok", (response) => {
-    app.ports.gameUpdated.send(response);
-  });
+  gameChannel.join().receive("ok", () => {});
+});
+
+app.ports.startGame.subscribe(() => {
+  gameChannel.push("start_game", {});
+})
+
+app.ports.createTeam.subscribe(({playerId, name}) => {
+  gameChannel.push("create_team", {player_id: playerId, name: name});
+});
+
+app.ports.deleteTeam.subscribe((teamId) => {
+  gameChannel.push("delete_team", {team_id: teamId});
+});
+
+app.ports.joinTeam.subscribe(({playerId, teamId}) => {
+  gameChannel.push("player_join_team", {player_id: playerId, team_id: teamId});
+});
+
+app.ports.updatePlayerName.subscribe(({playerId, name}) => {
+  gameChannel.push("player_update_name", {player_id: playerId, name: name});
 });
 
 app.ports.requestJump.subscribe((playerId) => {
@@ -75,10 +106,6 @@ app.ports.requestShoot.subscribe(({playerId, position, linvel}) => {
   gameChannel.push("player_shoot", { player_id: playerId, position, linvel});
 });
 
-// app.ports.startGame.subscribe((data) => {
-//   gameChannel.push("start_game", data);
-// });
-
 window.onbeforeunload = () => {
   if (gameChannel) {
     gameChannel.leave();
@@ -86,10 +113,16 @@ window.onbeforeunload = () => {
 };
 
 // prevent zoom on doubletap
+let lastTouchEnd = 0;
+let touchTapDelta = 500;
 document.addEventListener(
   "touchend",
   (event) => {
-    event.preventDefault();
+    const now = new Date().getTime();
+    if (now - lastTouchEnd <= touchTapDelta) {
+      event.preventDefault();
+    }
+    lastTouchEnd = now;
   },
   false
 );

@@ -17,6 +17,7 @@ import Force
 import Frame3d
 import Html exposing (Html)
 import Html.Attributes
+import Html.Events
 import Html.Events.Extra.Pointer as Pointer
 import Json.Decode
 import Json.Encode
@@ -34,7 +35,10 @@ import Quantity
 import Scene3d
 import Scene3d.Material
 import Scene3d.Mesh
+import Server.Player
 import Server.State
+import Server.Team
+import Set
 import Sphere3d
 import String
 import Task
@@ -43,21 +47,31 @@ import Viewpoint3d
 import WebGL
 
 
-
--- start performing actions before they are approved by the server
-
-
-isClientOptimistic : Bool
-isClientOptimistic =
-    False
-
-
 type alias Flags =
-    { playerId : String
+    { playerId : PlayerId
     }
 
 
-type alias GameState =
+type alias BeforeLobbyState =
+    { gameCode : String
+    , topic : String
+    , playerId : PlayerId
+    }
+
+
+type alias LobbyState =
+    { playerId : PlayerId
+    , teams : List Server.Team.Team
+    , players : List Server.Player.Player
+    , topic : String
+    , gameId : String
+    , teamNameInput : String
+    , isEditingPlayerName : Bool
+    , playerNameInput : String
+    }
+
+
+type alias PlayingState =
     { playerId : String
     , viewSize : Float
     , movementPadOrigin : Vec2
@@ -68,22 +82,41 @@ type alias GameState =
     , targetPadHeldMs : Float
     , world : Physics.World.World Data
     , lastUpdated : Int
-    , newServerState : Maybe Json.Encode.Value
+    , newServerState : Maybe Server.State.State
     , msSinceLastServerUpdateApplied : Float
     , cameraXRotationAngle : Float
     , cameraZRotationAngle : Float
     , shouldJumpNextFrame : Bool
     , shouldShootNextFrame : Bool
+    , teams : List Server.Team.Team
     }
+
+
+type alias PostGameState =
+    { playerId : String
+    , teams : List Server.Team.Team
+    , players : List ( Server.Player.Player, PlayerStats )
+    , topic : String
+    }
+
+
+type alias PlayerStats =
+    { hp : Int }
 
 
 type alias PlayerId =
     String
 
 
-type Model
-    = Waiting PlayerId
-    | Playing GameState
+type alias Model =
+    ( PlayerId, Game )
+
+
+type Game
+    = BeforeLobby BeforeLobbyState
+    | Lobby LobbyState
+    | Playing PlayingState
+    | PostGame PostGameState
 
 
 type Msg
@@ -96,6 +129,19 @@ type Msg
     | TargetPadMoved Vec2
     | TargetPadUp
     | GameUpdated Json.Encode.Value
+    | ProcessedGameUpdate Server.State.State
+    | GameCodeInputUpdated String
+    | TopicUpdated String
+    | JoinGame
+    | CreateGame
+    | TeamNameInputUpdated String
+    | CreateTeam
+    | EditPlayerName
+    | SavePlayerName
+    | PlayerNameInputUpdated String
+    | JoinTeam String
+    | DeleteTeam String
+    | StartGame
 
 
 fovAngle : Angle.Angle
@@ -105,7 +151,7 @@ fovAngle =
 
 floor : Physics.Body.Body BodyData.Data
 floor =
-    Physics.Body.plane { mesh = WebGL.triangles [], class = Floor, hp = 0 }
+    Physics.Body.plane { mesh = WebGL.triangles [], class = Floor, hp = 0, id = "floor" }
 
 
 initWorld : Physics.World.World Data
@@ -163,7 +209,7 @@ getEyePoint me =
         |> Point3d.translateBy (Vector3d.meters 0 0 0.5)
 
 
-getLookAxis : GameState -> Axis3d.Axis3d Length.Meters Physics.Coordinates.WorldCoordinates
+getLookAxis : PlayingState -> Axis3d.Axis3d Length.Meters Physics.Coordinates.WorldCoordinates
 getLookAxis gameState =
     case getMe gameState.world of
         Just me ->
@@ -181,10 +227,6 @@ getLookAxis gameState =
             Frame3d.yAxis Frame3d.atOrigin
 
 
-jumpImpulse =
-    Force.newtons 2400 |> Quantity.times (Duration.seconds 0.15)
-
-
 isAlive : Physics.Body.Body Data -> Bool
 isAlive body =
     let
@@ -192,15 +234,6 @@ isAlive body =
             Physics.Body.data body
     in
     data.hp > 0
-
-
-jump : Physics.Body.Body Data -> Physics.Body.Body Data
-jump body =
-    let
-        hitPoint =
-            Physics.Body.originPoint body
-    in
-    Physics.Body.applyImpulse jumpImpulse Direction3d.positiveZ hitPoint body
 
 
 addBodies :
@@ -213,11 +246,41 @@ addBodies bodies world =
 
 init : Flags -> ( Model, Cmd Msg )
 init { playerId } =
-    ( Waiting playerId, joinGame ( "aaaa", playerId ) )
+    ( ( playerId
+      , BeforeLobby
+            { gameCode = ""
+            , topic = ""
+            , playerId = playerId
+            }
+      )
+    , Cmd.none
+    )
 
 
-initPlaying : String -> Server.State.State -> ( Model, Cmd Msg )
-initPlaying playerId { bodies, lastUpdated } =
+initLobby : PlayerId -> Server.State.State -> ( Game, Cmd Msg )
+initLobby playerId serverState =
+    ( Lobby
+        { playerId = playerId
+        , players = serverState.players
+        , teams = serverState.teams
+        , topic = serverState.topic
+        , gameId = serverState.id
+        , teamNameInput = ""
+        , playerNameInput =
+            case List.Extra.find (.id >> (==) playerId) serverState.players of
+                Just player ->
+                    player.name
+
+                Nothing ->
+                    ""
+        , isEditingPlayerName = False
+        }
+    , Cmd.none
+    )
+
+
+initPlaying : PlayerId -> Server.State.State -> ( Game, Cmd Msg )
+initPlaying playerId { bodies, lastUpdated, teams } =
     let
         world =
             addBodies bodies initWorld
@@ -258,8 +321,35 @@ initPlaying playerId { bodies, lastUpdated } =
         , cameraZRotationAngle = initialCameraZRotationAngle
         , shouldJumpNextFrame = False
         , shouldShootNextFrame = False
+        , teams = teams
         }
     , Task.perform ViewportChanged Browser.Dom.getViewport
+    )
+
+
+initPostGame : PlayerId -> Server.State.State -> ( Game, Cmd Msg )
+initPostGame playerId serverState =
+    let
+        playersWithStats =
+            List.filterMap
+                (\body ->
+                    let
+                        { id, hp } =
+                            Physics.Body.data body
+                    in
+                    serverState.players
+                        |> List.Extra.find (.id >> (==) id)
+                        |> Maybe.map (\player -> ( player, { hp = hp } ))
+                )
+                serverState.bodies
+    in
+    ( PostGame
+        { playerId = playerId
+        , teams = serverState.teams
+        , players = playersWithStats
+        , topic = serverState.topic
+        }
+    , Cmd.none
     )
 
 
@@ -273,7 +363,7 @@ shootThresholdMs =
     300.0
 
 
-updateMovement : Float -> Maybe (Physics.Body.Body BodyData.Data) -> GameState -> ( GameState, Cmd Msg )
+updateMovement : Float -> Maybe (Physics.Body.Body BodyData.Data) -> PlayingState -> ( PlayingState, Cmd Msg )
 updateMovement ms maybeMe gameState =
     case gameState.movementPadOffset of
         Just relativePos ->
@@ -346,7 +436,7 @@ updateMovement ms maybeMe gameState =
             ( gameState, Cmd.none )
 
 
-updateTarget : Float -> GameState -> ( GameState, Cmd Msg )
+updateTarget : Float -> PlayingState -> ( PlayingState, Cmd Msg )
 updateTarget ms gameState =
     case gameState.targetPadOffset of
         Just relativePos ->
@@ -393,7 +483,7 @@ updateTarget ms gameState =
             ( gameState, Cmd.none )
 
 
-applyActions : Maybe (Physics.Body.Body BodyData.Data) -> GameState -> Float -> ( GameState, Cmd Msg )
+applyActions : Maybe (Physics.Body.Body BodyData.Data) -> PlayingState -> Float -> ( PlayingState, Cmd Msg )
 applyActions previousMe gameState ms =
     let
         playerIsAlive =
@@ -426,21 +516,14 @@ applyActions previousMe gameState ms =
     ( { gameStateShootApplied | shouldJumpNextFrame = False, shouldShootNextFrame = False }, Cmd.batch [ movementCmds, rotationCmds, jumpCmd, shootCmd ] )
 
 
-applyJump : GameState -> ( GameState, Cmd Msg )
+applyJump : PlayingState -> ( PlayingState, Cmd Msg )
 applyJump gameState =
-    ( { gameState
-        | world =
-            if isClientOptimistic then
-                updateMe jump gameState.world
-
-            else
-                gameState.world
-      }
+    ( gameState
     , requestJump gameState.playerId
     )
 
 
-applyShoot : GameState -> ( GameState, Cmd Msg )
+applyShoot : PlayingState -> ( PlayingState, Cmd Msg )
 applyShoot gameState =
     let
         projectileOrientation =
@@ -457,15 +540,8 @@ applyShoot gameState =
                     (Force.newtons 200 |> Quantity.times (Duration.milliseconds 16.667))
                     (Axis3d.direction projectileOrientation)
                     projectileStartPoint
-
-        nextWorld =
-            if isClientOptimistic then
-                Physics.World.add projectile gameState.world
-
-            else
-                gameState.world
     in
-    ( { gameState | world = nextWorld }
+    ( gameState
     , requestShoot
         { playerId = gameState.playerId
         , position = Point3d.toRecord Length.inMeters projectileStartPoint
@@ -479,27 +555,70 @@ applyShoot gameState =
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update msg model =
-    case model of
-        Waiting playerId ->
+update msg ( playerId, game ) =
+    let
+        ( nextGame, nextCmd ) =
             case msg of
                 GameUpdated gameUpdateData ->
                     case Json.Decode.decodeValue (Server.State.decoder playerId) gameUpdateData of
                         Err _ ->
-                            ( model, Cmd.none )
+                            ( game, Cmd.none )
 
                         Ok serverState ->
-                            initPlaying playerId serverState
+                            case ( game, serverState.status ) of
+                                ( BeforeLobby _, _ ) ->
+                                    initLobby playerId serverState
+
+                                ( Lobby _, Server.State.Playing ) ->
+                                    initPlaying playerId serverState
+
+                                ( Lobby lobbyState, _ ) ->
+                                    let
+                                        ( nextLobbyState, cmds ) =
+                                            updateLobby msg lobbyState
+                                    in
+                                    ( Lobby nextLobbyState, cmds )
+
+                                ( Playing _, Server.State.Finished ) ->
+                                    initPostGame playerId serverState
+
+                                ( Playing playingState, _ ) ->
+                                    let
+                                        ( nextPlayingState, cmds ) =
+                                            updatePlaying (ProcessedGameUpdate serverState) playingState
+                                    in
+                                    ( Playing nextPlayingState, cmds )
+
+                                ( PostGame _, _ ) ->
+                                    initPostGame playerId serverState
 
                 _ ->
-                    ( model, Cmd.none )
+                    case game of
+                        BeforeLobby beforeLobbyState ->
+                            let
+                                ( nextBeforeLobbyState, cmds ) =
+                                    updateBeforeLobby msg beforeLobbyState
+                            in
+                            ( BeforeLobby nextBeforeLobbyState, cmds )
 
-        Playing gameState ->
-            let
-                ( nextGameState, cmds ) =
-                    updateGameState msg gameState
-            in
-            ( Playing nextGameState, cmds )
+                        Lobby lobbyState ->
+                            let
+                                ( nextLobbyState, cmds ) =
+                                    updateLobby msg lobbyState
+                            in
+                            ( Lobby nextLobbyState, cmds )
+
+                        Playing gameState ->
+                            let
+                                ( nextPlayingState, cmds ) =
+                                    updatePlaying msg gameState
+                            in
+                            ( Playing nextPlayingState, cmds )
+
+                        PostGame postGameState ->
+                            ( PostGame postGameState, Cmd.none )
+    in
+    ( ( playerId, nextGame ), nextCmd )
 
 
 simulatePhysics : Physics.World.World Data -> Float -> Physics.World.World Data
@@ -507,8 +626,8 @@ simulatePhysics world ms =
     Physics.World.simulate (Duration.milliseconds ms) world
 
 
-getNextSimulatedGameState : Float -> GameState -> GameState
-getNextSimulatedGameState ms gameState =
+getNextSimulatedPlayingState : Float -> PlayingState -> PlayingState
+getNextSimulatedPlayingState ms gameState =
     { gameState
         | world = simulatePhysics gameState.world ms
         , newServerState = Nothing
@@ -516,48 +635,112 @@ getNextSimulatedGameState ms gameState =
     }
 
 
-serverUpdateErrorThresholdMs : Float
-serverUpdateErrorThresholdMs =
-    1000
+updateBeforeLobby : Msg -> BeforeLobbyState -> ( BeforeLobbyState, Cmd Msg )
+updateBeforeLobby msg beforeLobbyState =
+    case msg of
+        GameCodeInputUpdated newGameCode ->
+            ( { beforeLobbyState | gameCode = newGameCode }, Cmd.none )
+
+        TopicUpdated newTopicName ->
+            ( { beforeLobbyState | topic = newTopicName }, Cmd.none )
+
+        JoinGame ->
+            ( beforeLobbyState, joinGame { playerId = beforeLobbyState.playerId, gameId = Just beforeLobbyState.gameCode, topic = Nothing } )
+
+        CreateGame ->
+            ( beforeLobbyState, joinGame { playerId = beforeLobbyState.playerId, gameId = Nothing, topic = Just beforeLobbyState.topic } )
+
+        _ ->
+            ( beforeLobbyState, Cmd.none )
 
 
-updateGameState : Msg -> GameState -> ( GameState, Cmd Msg )
-updateGameState msg gameState =
+updateLobby : Msg -> LobbyState -> ( LobbyState, Cmd Msg )
+updateLobby msg lobbyState =
+    case msg of
+        TeamNameInputUpdated newTeamName ->
+            ( { lobbyState | teamNameInput = newTeamName }, Cmd.none )
+
+        CreateTeam ->
+            ( { lobbyState | teamNameInput = "" }, createTeam { playerId = lobbyState.playerId, name = lobbyState.teamNameInput } )
+
+        GameUpdated gameUpdateData ->
+            case Json.Decode.decodeValue (Server.State.decoder lobbyState.playerId) gameUpdateData of
+                Err _ ->
+                    ( lobbyState, Cmd.none )
+
+                Ok nextGameData ->
+                    ( { lobbyState | players = nextGameData.players, teams = nextGameData.teams }, Cmd.none )
+
+        EditPlayerName ->
+            ( { lobbyState | isEditingPlayerName = True }, Cmd.none )
+
+        PlayerNameInputUpdated name ->
+            ( { lobbyState | playerNameInput = name }, Cmd.none )
+
+        SavePlayerName ->
+            ( { lobbyState | isEditingPlayerName = False }
+            , updatePlayerName
+                { playerId = lobbyState.playerId
+                , name = lobbyState.playerNameInput
+                }
+            )
+
+        JoinTeam teamId ->
+            ( lobbyState, joinTeam { playerId = lobbyState.playerId, teamId = teamId } )
+
+        DeleteTeam teamId ->
+            ( lobbyState, deleteTeam teamId )
+
+        StartGame ->
+            ( lobbyState, startGame () )
+
+        _ ->
+            ( lobbyState, Cmd.none )
+
+
+updatePlaying : Msg -> PlayingState -> ( PlayingState, Cmd Msg )
+updatePlaying msg gameState =
     case msg of
         Delta ms ->
             let
                 nextModel =
                     case gameState.newServerState of
-                        Just gameUpdateData ->
-                            case Json.Decode.decodeValue (Server.State.decoder gameState.playerId) gameUpdateData of
-                                Err _ ->
-                                    getNextSimulatedGameState ms gameState
+                        Just { bodies, lastUpdated } ->
+                            let
+                                isNewServerState =
+                                    lastUpdated > gameState.lastUpdated
 
-                                Ok { bodies, lastUpdated } ->
-                                    if
-                                        (lastUpdated > gameState.lastUpdated)
-                                            && (abs (toFloat lastUpdated - (toFloat gameState.lastUpdated + gameState.msSinceLastServerUpdateApplied)) < serverUpdateErrorThresholdMs)
-                                    then
-                                        { gameState
-                                            | world = addBodies bodies initWorld
-                                            , lastUpdated = lastUpdated
-                                            , newServerState = Nothing
-                                            , msSinceLastServerUpdateApplied = 0
-                                        }
+                                clientServerDiscrepancyMs =
+                                    (toFloat gameState.lastUpdated + gameState.msSinceLastServerUpdateApplied) - toFloat lastUpdated
 
-                                    else
-                                        getNextSimulatedGameState ms gameState
+                                clientServerDiscrepancyErrorThresholdMs : Float
+                                clientServerDiscrepancyErrorThresholdMs =
+                                    1000
+
+                                isServerStateInSync =
+                                    clientServerDiscrepancyMs < clientServerDiscrepancyErrorThresholdMs
+                            in
+                            if isNewServerState && isServerStateInSync then
+                                { gameState
+                                    | world = addBodies bodies initWorld
+                                    , lastUpdated = lastUpdated
+                                    , newServerState = Nothing
+                                    , msSinceLastServerUpdateApplied = 0
+                                }
+
+                            else
+                                getNextSimulatedPlayingState ms gameState
 
                         Nothing ->
-                            getNextSimulatedGameState ms gameState
+                            getNextSimulatedPlayingState ms gameState
 
                 ( nextModelActionsApplied, cmd ) =
                     applyActions (getMe gameState.world) nextModel ms
             in
             ( nextModelActionsApplied, cmd )
 
-        GameUpdated gameUpdateData ->
-            ( { gameState | newServerState = Just gameUpdateData }, Cmd.none )
+        ProcessedGameUpdate nextGameData ->
+            ( { gameState | newServerState = Just nextGameData }, Cmd.none )
 
         ViewportChanged { viewport } ->
             let
@@ -608,6 +791,9 @@ updateGameState msg gameState =
 
             else
                 ( nextModel, Cmd.none )
+
+        _ ->
+            ( gameState, Cmd.none )
 
 
 viewPad :
@@ -678,8 +864,199 @@ viewHealthBar body viewPointXDirection =
 
 
 view : Model -> Html Msg
-view model =
-    case model of
+view ( playerId, game ) =
+    case game of
+        BeforeLobby beforeLobbyState ->
+            Html.div
+                [ Html.Attributes.style "flex" "1"
+                , Html.Attributes.style "flex-direction" "column"
+                , Html.Attributes.style "align-items" "center"
+                , Html.Attributes.style "justify-content" "space-around"
+                , Html.Attributes.style "height" "75%"
+                , Html.Attributes.style "display" "flex"
+                ]
+                [ Html.div
+                    [ Html.Attributes.style "display" "flex"
+                    , Html.Attributes.style "flex" "1"
+                    , Html.Attributes.style "flex-direction" "column"
+                    , Html.Attributes.style "align-items" "center"
+                    , Html.Attributes.style "justify-content" "center"
+                    ]
+                    [ Html.div [] [ Html.text "Join a debate topic" ]
+                    , Html.div []
+                        [ Html.input
+                            [ Html.Events.onInput GameCodeInputUpdated
+                            , Html.Attributes.value beforeLobbyState.gameCode
+                            , Html.Attributes.placeholder "Enter a game code"
+                            ]
+                            []
+                        , Html.button
+                            [ Html.Attributes.disabled (String.length beforeLobbyState.gameCode /= 4)
+                            , Html.Events.onClick JoinGame
+                            ]
+                            [ Html.text "Join" ]
+                        ]
+                    ]
+                , Html.div
+                    [ Html.Attributes.style "display" "flex"
+                    , Html.Attributes.style "flex" "1"
+                    , Html.Attributes.style "flex-direction" "column"
+                    , Html.Attributes.style "align-items" "center"
+                    , Html.Attributes.style "justify-content" "center"
+                    ]
+                    [ Html.div [] [ Html.text "OR" ]
+                    ]
+                , Html.div
+                    [ Html.Attributes.style "display" "flex"
+                    , Html.Attributes.style "flex" "1"
+                    , Html.Attributes.style "flex-direction" "column"
+                    , Html.Attributes.style "align-items" "center"
+                    , Html.Attributes.style "justify-content" "center"
+                    ]
+                    [ Html.div [] [ Html.text "Start a new debate topic (like \"Where should we eat tonight?\")" ]
+                    , Html.div []
+                        [ Html.textarea
+                            [ Html.Events.onInput TopicUpdated
+                            , Html.Attributes.value beforeLobbyState.topic
+                            , Html.Attributes.style "width" "100%"
+                            , Html.Attributes.placeholder "Enter a topic"
+                            ]
+                            []
+                        ]
+                    , Html.button
+                        [ Html.Attributes.disabled (String.length beforeLobbyState.topic == 0)
+                        , Html.Events.onClick CreateGame
+                        ]
+                        [ Html.text "Start" ]
+                    ]
+                ]
+
+        Lobby lobbyState ->
+            let
+                playerIdsAssignedToTeams =
+                    List.foldl (.playerIds >> Set.union) Set.empty lobbyState.teams
+
+                unassignedPlayers =
+                    List.filter (not << (\p -> Set.member p.id playerIdsAssignedToTeams)) lobbyState.players
+
+                viewPlayer player =
+                    let
+                        playerName =
+                            case player.name of
+                                "" ->
+                                    Html.span [ Html.Attributes.style "font-style" "italic" ] [ Html.text "Anonymous Player" ]
+
+                                name ->
+                                    Html.span [] [ Html.text name ]
+                    in
+                    if player.id == lobbyState.playerId then
+                        if lobbyState.isEditingPlayerName then
+                            Html.div []
+                                [ Html.input
+                                    [ Html.Attributes.value lobbyState.playerNameInput
+                                    , Html.Events.onInput PlayerNameInputUpdated
+                                    ]
+                                    []
+                                , Html.button [ Html.Events.onClick SavePlayerName ]
+                                    [ Html.text "Save"
+                                    ]
+                                ]
+
+                        else
+                            Html.div []
+                                [ playerName
+                                , Html.button [ Html.Events.onClick EditPlayerName ]
+                                    [ Html.text "Edit"
+                                    ]
+                                ]
+
+                    else
+                        Html.div []
+                            [ playerName
+                            ]
+            in
+            Html.div []
+                [ Html.h1 [] [ Html.text lobbyState.gameId ]
+                , Html.h3 [] [ Html.text lobbyState.topic ]
+                , Html.div []
+                    [ Html.button
+                        [ Html.Attributes.disabled (List.length unassignedPlayers > 0)
+                        , Html.Events.onClick StartGame
+                        ]
+                        [ Html.text "Start Game" ]
+                    ]
+                , Html.div []
+                    [ Html.input
+                        [ Html.Attributes.placeholder "Team name"
+                        , Html.Attributes.value lobbyState.teamNameInput
+                        , Html.Events.onInput TeamNameInputUpdated
+                        ]
+                        []
+                    , Html.button
+                        [ Html.Events.onClick CreateTeam
+                        , Html.Attributes.disabled (String.length lobbyState.teamNameInput == 0)
+                        ]
+                        [ Html.text "Create" ]
+                    ]
+                , Html.div
+                    [ Html.Attributes.style "display" "flex"
+                    , Html.Attributes.style "flex-flow" "row wrap"
+                    ]
+                    (List.map
+                        (\team ->
+                            Html.div
+                                [ Html.Attributes.style "flex" "1"
+                                , Html.Attributes.style "box-shadow" "0 2px 4px 0 rgba(0,0,0,0.2)"
+                                , Html.Attributes.style "margin" "5px"
+                                , Html.Attributes.style "min-width" "150px"
+                                , Html.Attributes.style "padding" "20px"
+                                , Html.Attributes.style "border" ("2px solid " ++ Color.toCssString team.color)
+                                ]
+                                [ Html.div
+                                    []
+                                    [ Html.h4 [ Html.Attributes.style "margin" "5px" ] [ Html.text team.cause ]
+                                    , Html.div [ Html.Attributes.style "min-height" "20px" ]
+                                        [ if not <| Set.member lobbyState.playerId team.playerIds then
+                                            Html.button [ Html.Events.onClick (JoinTeam team.id) ] [ Html.text "Join" ]
+
+                                          else
+                                            Html.span [] []
+                                        , if Set.isEmpty team.playerIds && team.ownerId == lobbyState.playerId then
+                                            Html.button [ Html.Events.onClick (DeleteTeam team.id) ] [ Html.text "Delete" ]
+
+                                          else
+                                            Html.span [] []
+                                        ]
+                                    , Html.div []
+                                        (team.playerIds
+                                            |> Set.toList
+                                            |> List.filterMap (\pId -> List.Extra.find (\p -> p.id == pId) lobbyState.players)
+                                            |> List.map viewPlayer
+                                        )
+                                    ]
+                                ]
+                        )
+                        lobbyState.teams
+                        ++ [ Html.div
+                                [ Html.Attributes.style "flex" "1"
+                                , Html.Attributes.style "box-shadow" "0 2px 4px 0 rgba(0,0,0,0.2)"
+                                , Html.Attributes.style "margin" "5px"
+                                , Html.Attributes.style "min-width" "150px"
+                                , Html.Attributes.style "padding" "20px"
+                                ]
+                                [ Html.div
+                                    []
+                                    [ Html.h4 [ Html.Attributes.style "margin" "5px" ]
+                                        [ Html.text "Unassigned"
+                                        ]
+                                    , Html.div []
+                                        (List.map viewPlayer unassignedPlayers)
+                                    ]
+                                ]
+                           ]
+                    )
+                ]
+
         Playing gameState ->
             let
                 viewpoint =
@@ -764,9 +1141,18 @@ view model =
                                                     |> Scene3d.placeIn bodyFrame
 
                                             else
+                                                let
+                                                    color =
+                                                        case List.Extra.find (.playerIds >> Set.member bodyData.id) gameState.teams of
+                                                            Just team ->
+                                                                team.color
+
+                                                            Nothing ->
+                                                                Color.black
+                                                in
                                                 Scene3d.group
                                                     [ Scene3d.cylinderWithShadow
-                                                        (Scene3d.Material.matte Color.green)
+                                                        (Scene3d.Material.matte color)
                                                         (Cylinder3d.centeredOn
                                                             Point3d.origin
                                                             Direction3d.z
@@ -849,8 +1235,100 @@ view model =
                     ]
                 ]
 
-        _ ->
-            Html.div [] [ Html.text "Loading..." ]
+        PostGame postGameState ->
+            let
+                playersForTeam team =
+                    List.filter (\( p, _ ) -> Set.member p.id team.playerIds) postGameState.players
+
+                playerIsAlive ( _, stats ) =
+                    stats.hp > 0
+
+                maybeWinningTeam =
+                    List.Extra.find (playersForTeam >> List.filter playerIsAlive >> List.length >> (\l -> l > 0)) postGameState.teams
+
+                teamHp team =
+                    team |> playersForTeam |> List.foldl (\( _, pStats ) -> (+) pStats.hp) 0
+
+                teamsByHp =
+                    List.reverse <| List.sortBy teamHp postGameState.teams
+
+                viewPlayer ( p, pStats ) =
+                    Html.div
+                        [ Html.Attributes.style "display" "flex"
+                        , Html.Attributes.style "flex-direction" "row"
+                        , Html.Attributes.style "align-items" "center"
+                        , Html.Attributes.style "justify-content" "center"
+                        ]
+                        [ case p.name of
+                            "" ->
+                                Html.span [ Html.Attributes.style "font-style" "italic" ] [ Html.text "Anonymous Player" ]
+
+                            name ->
+                                Html.text name
+                        , viewHp pStats.hp
+                        ]
+
+                viewHp hp =
+                    Html.div
+                        [ Html.Attributes.style "margin-left" "5px"
+                        , Html.Attributes.style "display" "flex"
+                        , Html.Attributes.style "flex-direction" "row"
+                        , Html.Attributes.style "align-items" "center"
+                        , Html.Attributes.style "justify-content" "center"
+                        ]
+                        (case hp of
+                            0 ->
+                                [ Html.text "💀" ]
+
+                            n ->
+                                viewHpHelper n
+                        )
+
+                viewHpHelper hp =
+                    case hp of
+                        0 ->
+                            []
+
+                        n ->
+                            Html.div
+                                [ Html.Attributes.style "border-radius" "100%"
+                                , Html.Attributes.style "height" "8px"
+                                , Html.Attributes.style "width" "8px"
+                                , Html.Attributes.style "margin-left" "3px"
+                                , Html.Attributes.style "background-color" "green"
+                                ]
+                                []
+                                :: viewHpHelper (n - 1)
+            in
+            Html.div []
+                [ Html.h3 []
+                    [ Html.text postGameState.topic
+                    ]
+                , Html.h2 []
+                    [ Html.text
+                        (case maybeWinningTeam of
+                            Just winningTeam ->
+                                winningTeam.cause
+
+                            Nothing ->
+                                "draw"
+                        )
+                    ]
+                , Html.div []
+                    (teamsByHp
+                        |> List.map
+                            (\team ->
+                                Html.div
+                                    []
+                                    (Html.h4 [] [ Html.text team.cause ]
+                                        :: (team
+                                                |> playersForTeam
+                                                |> List.map viewPlayer
+                                           )
+                                    )
+                            )
+                    )
+                ]
 
 
 main : Program Flags Model Msg
@@ -868,7 +1346,25 @@ main =
         }
 
 
-port joinGame : ( String, String ) -> Cmd msg
+port createGame : { playerId : String, topic : String } -> Cmd msg
+
+
+port joinGame : { playerId : String, gameId : Maybe String, topic : Maybe String } -> Cmd msg
+
+
+port startGame : () -> Cmd msg
+
+
+port createTeam : { playerId : String, name : String } -> Cmd msg
+
+
+port joinTeam : { playerId : String, teamId : String } -> Cmd msg
+
+
+port deleteTeam : String -> Cmd msg
+
+
+port updatePlayerName : { playerId : String, name : String } -> Cmd msg
 
 
 port requestJump : String -> Cmd msg
