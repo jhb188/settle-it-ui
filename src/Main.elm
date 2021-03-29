@@ -19,6 +19,7 @@ import Html exposing (Html)
 import Html.Attributes
 import Html.Events
 import Html.Events.Extra.Pointer as Pointer
+import Html.Lazy
 import Json.Decode
 import Json.Encode
 import Length
@@ -35,6 +36,7 @@ import Quantity
 import Scene3d
 import Scene3d.Material
 import Scene3d.Mesh
+import Server.Body
 import Server.Player
 import Server.State
 import Server.Team
@@ -82,7 +84,7 @@ type alias PlayingState =
     , targetPadHeldMs : Float
     , world : Physics.World.World Data
     , lastUpdated : Int
-    , newServerState : Maybe Server.State.State
+    , newBodiesUpdate : Maybe Json.Encode.Value
     , msSinceLastServerUpdateApplied : Float
     , cameraXRotationAngle : Float
     , cameraZRotationAngle : Float
@@ -129,7 +131,7 @@ type Msg
     | TargetPadMoved Vec2
     | TargetPadUp
     | GameUpdated Json.Encode.Value
-    | ProcessedGameUpdate Server.State.State
+    | BodiesUpdated Json.Encode.Value
     | GameCodeInputUpdated String
     | TopicUpdated String
     | JoinGame
@@ -209,17 +211,17 @@ getEyePoint me =
         |> Point3d.translateBy (Vector3d.meters 0 0 0.5)
 
 
-getLookAxis : PlayingState -> Axis3d.Axis3d Length.Meters Physics.Coordinates.WorldCoordinates
-getLookAxis gameState =
-    case getMe gameState.world of
+getLookAxis : Physics.World.World BodyData.Data -> Float -> Float -> Axis3d.Axis3d Length.Meters Physics.Coordinates.WorldCoordinates
+getLookAxis world xRotationDeg zRotationDeg =
+    case getMe world of
         Just me ->
             Frame3d.atOrigin
                 |> Frame3d.rotateAroundOwn
                     Frame3d.zAxis
-                    (Angle.degrees gameState.cameraZRotationAngle)
+                    (Angle.degrees zRotationDeg)
                 |> Frame3d.rotateAroundOwn
                     Frame3d.xAxis
-                    (Angle.degrees gameState.cameraXRotationAngle)
+                    (Angle.degrees xRotationDeg)
                 |> Frame3d.yAxis
                 |> Axis3d.moveTo (getEyePoint me)
 
@@ -315,7 +317,7 @@ initPlaying playerId { bodies, lastUpdated, teams } =
         , targetPadHeldMs = 0
         , world = world
         , lastUpdated = lastUpdated
-        , newServerState = Nothing
+        , newBodiesUpdate = Nothing
         , msSinceLastServerUpdateApplied = 0.0
         , cameraXRotationAngle = 0.0
         , cameraZRotationAngle = initialCameraZRotationAngle
@@ -527,7 +529,7 @@ applyShoot : PlayingState -> ( PlayingState, Cmd Msg )
 applyShoot gameState =
     let
         projectileOrientation =
-            getLookAxis gameState
+            getLookAxis gameState.world gameState.cameraXRotationAngle gameState.cameraZRotationAngle
 
         projectileStartPoint =
             Point3d.along projectileOrientation (Length.centimeters 25)
@@ -583,11 +585,7 @@ update msg ( playerId, game ) =
                                     initPostGame playerId serverState
 
                                 ( Playing playingState, _ ) ->
-                                    let
-                                        ( nextPlayingState, cmds ) =
-                                            updatePlaying (ProcessedGameUpdate serverState) playingState
-                                    in
-                                    ( Playing nextPlayingState, cmds )
+                                    ( Playing playingState, Cmd.none )
 
                                 ( PostGame _, _ ) ->
                                     initPostGame playerId serverState
@@ -630,7 +628,7 @@ getNextSimulatedPlayingState : Float -> PlayingState -> PlayingState
 getNextSimulatedPlayingState ms gameState =
     { gameState
         | world = simulatePhysics gameState.world ms
-        , newServerState = Nothing
+        , newBodiesUpdate = Nothing
         , msSinceLastServerUpdateApplied = gameState.msSinceLastServerUpdateApplied + ms
     }
 
@@ -704,8 +702,8 @@ updatePlaying msg gameState =
         Delta ms ->
             let
                 nextModel =
-                    case gameState.newServerState of
-                        Just { bodies, lastUpdated } ->
+                    case Maybe.map (Json.Decode.decodeValue (Server.State.bodiesStateDecoder gameState.playerId)) gameState.newBodiesUpdate of
+                        Just (Ok { bodies, lastUpdated }) ->
                             let
                                 isNewServerState =
                                     lastUpdated > gameState.lastUpdated
@@ -715,7 +713,7 @@ updatePlaying msg gameState =
 
                                 clientServerDiscrepancyErrorThresholdMs : Float
                                 clientServerDiscrepancyErrorThresholdMs =
-                                    1000
+                                    300
 
                                 isServerStateInSync =
                                     clientServerDiscrepancyMs < clientServerDiscrepancyErrorThresholdMs
@@ -724,14 +722,14 @@ updatePlaying msg gameState =
                                 { gameState
                                     | world = addBodies bodies initWorld
                                     , lastUpdated = lastUpdated
-                                    , newServerState = Nothing
+                                    , newBodiesUpdate = Nothing
                                     , msSinceLastServerUpdateApplied = 0
                                 }
 
                             else
                                 getNextSimulatedPlayingState ms gameState
 
-                        Nothing ->
+                        _ ->
                             getNextSimulatedPlayingState ms gameState
 
                 ( nextModelActionsApplied, cmd ) =
@@ -739,8 +737,8 @@ updatePlaying msg gameState =
             in
             ( nextModelActionsApplied, cmd )
 
-        ProcessedGameUpdate nextGameData ->
-            ( { gameState | newServerState = Just nextGameData }, Cmd.none )
+        BodiesUpdated bodiesUpdate ->
+            ( { gameState | newBodiesUpdate = Just bodiesUpdate }, Cmd.none )
 
         ViewportChanged { viewport } ->
             let
@@ -861,6 +859,192 @@ viewHealthBar body viewPointXDirection =
             Scene3d.Mesh.points { radius = Pixels.float 2 } (points hp)
     in
     Scene3d.mesh (Scene3d.Material.color Color.lightGreen) mesh
+
+
+viewPlaying :
+    Physics.World.World BodyData.Data
+    -> List Server.Team.Team
+    -> Float
+    -> Float
+    -> Float
+    -> Html Msg
+viewPlaying world teams cameraXRotationAngle cameraZRotationAngle viewSize =
+    let
+        viewpoint =
+            case getMe world of
+                Just me ->
+                    let
+                        eyePoint =
+                            getEyePoint me
+
+                        cameraAxis =
+                            getLookAxis world cameraXRotationAngle cameraZRotationAngle
+
+                        focalPoint =
+                            Point3d.along cameraAxis (Length.meters 1)
+                    in
+                    Viewpoint3d.lookAt
+                        { eyePoint = eyePoint
+                        , focalPoint = focalPoint
+                        , upDirection = Direction3d.positiveZ
+                        }
+
+                Nothing ->
+                    Viewpoint3d.lookAt
+                        { eyePoint = Point3d.origin
+                        , focalPoint = Point3d.origin
+                        , upDirection = Direction3d.positiveZ
+                        }
+
+        camera =
+            Camera3d.perspective { viewpoint = viewpoint, verticalFieldOfView = fovAngle }
+
+        entities =
+            world
+                |> Physics.World.bodies
+                |> List.filterMap
+                    (\body ->
+                        let
+                            bodyFrame =
+                                Physics.Body.frame body
+
+                            bodyData =
+                                Physics.Body.data body
+                        in
+                        case bodyData.class of
+                            Test ->
+                                Just <|
+                                    (Scene3d.sphereWithShadow
+                                        (Scene3d.Material.nonmetal
+                                            { baseColor = Color.red
+                                            , roughness = 0.4
+                                            }
+                                        )
+                                        (Sphere3d.atOrigin (Length.meters 0.5))
+                                        |> Scene3d.placeIn bodyFrame
+                                    )
+
+                            Floor ->
+                                Just <|
+                                    Scene3d.quad (Scene3d.Material.matte Color.lightCharcoal)
+                                        (Point3d.meters -100 -100 0)
+                                        (Point3d.meters -100 100 0)
+                                        (Point3d.meters 100 100 0)
+                                        (Point3d.meters 100 -100 0)
+
+                            Bullet ->
+                                Just <|
+                                    (Scene3d.sphere
+                                        (Scene3d.Material.matte Color.blue)
+                                        (Sphere3d.atOrigin (Length.centimeters 5))
+                                        |> Scene3d.placeIn bodyFrame
+                                    )
+
+                            NPC ->
+                                Just <|
+                                    if bodyData.hp == 0 then
+                                        Scene3d.blockWithShadow
+                                            (Scene3d.Material.matte Color.lightGray)
+                                            (Block3d.centeredOn
+                                                Frame3d.atOrigin
+                                                ( Length.meters 1.25, Length.meters 0.5, Length.meters 2.0 )
+                                            )
+                                            |> Scene3d.placeIn bodyFrame
+
+                                    else
+                                        let
+                                            color =
+                                                case List.Extra.find (.playerIds >> Set.member bodyData.id) teams of
+                                                    Just team ->
+                                                        team.color
+
+                                                    Nothing ->
+                                                        Color.black
+                                        in
+                                        Scene3d.group
+                                            [ Scene3d.cylinderWithShadow
+                                                (Scene3d.Material.matte color)
+                                                (Cylinder3d.centeredOn
+                                                    Point3d.origin
+                                                    Direction3d.z
+                                                    { radius = Length.meters 0.5
+                                                    , length = Length.meters 2.0
+                                                    }
+                                                )
+                                                |> Scene3d.placeIn bodyFrame
+                                            , viewHealthBar body (Viewpoint3d.xDirection viewpoint)
+                                            ]
+
+                            _ ->
+                                Nothing
+                    )
+    in
+    Html.div
+        [ Html.Attributes.style "height" "100%"
+        , Html.Attributes.style "width" "100%"
+        , Html.Attributes.style "display" "flex"
+        , Html.Attributes.style "align-items" "center"
+        , Html.Attributes.style "justify-content" "center"
+        , Html.Attributes.style "flex-direction" "column"
+        , Html.Attributes.style "touch-action" "none"
+        ]
+        [ Html.div
+            [ Html.Attributes.style "flex" "2"
+            , Html.Attributes.style "z-index" "1"
+            , Html.Attributes.style "border" "1px solid black"
+            ]
+            [ Scene3d.sunny
+                { upDirection = Direction3d.positiveZ
+                , sunlightDirection = Direction3d.yz (Angle.degrees -120)
+                , shadows = True
+                , dimensions = ( Pixels.int <| round viewSize, Pixels.int <| round viewSize )
+                , camera = camera
+                , clipDepth = Length.meters 0.5
+                , background = Scene3d.transparentBackground
+                , entities = entities
+                }
+            , Html.div
+                [ Html.Attributes.style "height" ((String.fromInt <| round viewSize) ++ "px")
+                , Html.Attributes.style "width" ((String.fromInt <| round viewSize) ++ "px")
+                , Html.Attributes.style "z-index" "2"
+                , Html.Attributes.style "background" "transparent"
+                , Html.Attributes.style "display" "flex"
+                , Html.Attributes.style "align-items" "center"
+                , Html.Attributes.style "justify-content" "center"
+                , Html.Attributes.style "position" "absolute"
+                , Html.Attributes.style "top" "0"
+                ]
+                [ Html.div
+                    [ Html.Attributes.style "height" "20px"
+                    , Html.Attributes.style "width" "20px"
+                    , Html.Attributes.style "border" "2px solid black"
+                    , Html.Attributes.style "border-radius" "100%"
+                    ]
+                    []
+                ]
+            ]
+        , Html.div
+            [ Html.Attributes.style "display" "flex"
+            , Html.Attributes.style "flex-direction" "row"
+            , Html.Attributes.style "flex" "1"
+            , Html.Attributes.style "width" "100%"
+            , Html.Attributes.style "align-items" "center"
+            , Html.Attributes.style "justify-content" "center"
+            ]
+            [ viewPad
+                viewSize
+                MovementPadDown
+                MovementPadMoved
+                MovementPadUp
+                [ Html.Attributes.style "background-color" "red" ]
+            , viewPad
+                viewSize
+                TargetPadDown
+                TargetPadMoved
+                TargetPadUp
+                [ Html.Attributes.style "background-color" "blue" ]
+            ]
+        ]
 
 
 view : Model -> Html Msg
@@ -1057,183 +1241,13 @@ view ( playerId, game ) =
                     )
                 ]
 
-        Playing gameState ->
-            let
-                viewpoint =
-                    case getMe gameState.world of
-                        Just me ->
-                            let
-                                eyePoint =
-                                    getEyePoint me
-
-                                cameraAxis =
-                                    getLookAxis gameState
-
-                                focalPoint =
-                                    Point3d.along cameraAxis (Length.meters 1)
-                            in
-                            Viewpoint3d.lookAt
-                                { eyePoint = eyePoint
-                                , focalPoint = focalPoint
-                                , upDirection = Direction3d.positiveZ
-                                }
-
-                        Nothing ->
-                            Viewpoint3d.lookAt
-                                { eyePoint = Point3d.origin
-                                , focalPoint = Point3d.origin
-                                , upDirection = Direction3d.positiveZ
-                                }
-
-                camera =
-                    Camera3d.perspective { viewpoint = viewpoint, verticalFieldOfView = fovAngle }
-
-                entities =
-                    gameState.world
-                        |> Physics.World.bodies
-                        |> List.filterMap
-                            (\body ->
-                                let
-                                    bodyFrame =
-                                        Physics.Body.frame body
-
-                                    bodyData =
-                                        Physics.Body.data body
-                                in
-                                case bodyData.class of
-                                    Test ->
-                                        Just <|
-                                            (Scene3d.sphereWithShadow
-                                                (Scene3d.Material.nonmetal
-                                                    { baseColor = Color.red
-                                                    , roughness = 0.4
-                                                    }
-                                                )
-                                                (Sphere3d.atOrigin (Length.meters 0.5))
-                                                |> Scene3d.placeIn bodyFrame
-                                            )
-
-                                    Floor ->
-                                        Just <|
-                                            Scene3d.quad (Scene3d.Material.matte Color.lightCharcoal)
-                                                (Point3d.meters -100 -100 0)
-                                                (Point3d.meters -100 100 0)
-                                                (Point3d.meters 100 100 0)
-                                                (Point3d.meters 100 -100 0)
-
-                                    Bullet ->
-                                        Just <|
-                                            (Scene3d.sphere
-                                                (Scene3d.Material.matte Color.blue)
-                                                (Sphere3d.atOrigin (Length.centimeters 5))
-                                                |> Scene3d.placeIn bodyFrame
-                                            )
-
-                                    NPC ->
-                                        Just <|
-                                            if bodyData.hp == 0 then
-                                                Scene3d.blockWithShadow
-                                                    (Scene3d.Material.matte Color.lightGray)
-                                                    (Block3d.centeredOn
-                                                        Frame3d.atOrigin
-                                                        ( Length.meters 1.25, Length.meters 0.5, Length.meters 2.0 )
-                                                    )
-                                                    |> Scene3d.placeIn bodyFrame
-
-                                            else
-                                                let
-                                                    color =
-                                                        case List.Extra.find (.playerIds >> Set.member bodyData.id) gameState.teams of
-                                                            Just team ->
-                                                                team.color
-
-                                                            Nothing ->
-                                                                Color.black
-                                                in
-                                                Scene3d.group
-                                                    [ Scene3d.cylinderWithShadow
-                                                        (Scene3d.Material.matte color)
-                                                        (Cylinder3d.centeredOn
-                                                            Point3d.origin
-                                                            Direction3d.z
-                                                            { radius = Length.meters 0.5
-                                                            , length = Length.meters 2.0
-                                                            }
-                                                        )
-                                                        |> Scene3d.placeIn bodyFrame
-                                                    , viewHealthBar body (Viewpoint3d.xDirection viewpoint)
-                                                    ]
-
-                                    _ ->
-                                        Nothing
-                            )
-            in
-            Html.div
-                [ Html.Attributes.style "height" "100%"
-                , Html.Attributes.style "width" "100%"
-                , Html.Attributes.style "display" "flex"
-                , Html.Attributes.style "align-items" "center"
-                , Html.Attributes.style "justify-content" "center"
-                , Html.Attributes.style "flex-direction" "column"
-                , Html.Attributes.style "touch-action" "none"
-                ]
-                [ Html.div
-                    [ Html.Attributes.style "flex" "2"
-                    , Html.Attributes.style "z-index" "1"
-                    , Html.Attributes.style "border" "1px solid black"
-                    ]
-                    [ Scene3d.sunny
-                        { upDirection = Direction3d.positiveZ
-                        , sunlightDirection = Direction3d.yz (Angle.degrees -120)
-                        , shadows = True
-                        , dimensions = ( Pixels.int <| round gameState.viewSize, Pixels.int <| round gameState.viewSize )
-                        , camera = camera
-                        , clipDepth = Length.meters 0.5
-                        , background = Scene3d.transparentBackground
-                        , entities = entities
-                        }
-                    , Html.div
-                        [ Html.Attributes.style "height" ((String.fromInt <| round gameState.viewSize) ++ "px")
-                        , Html.Attributes.style "width" ((String.fromInt <| round gameState.viewSize) ++ "px")
-                        , Html.Attributes.style "z-index" "2"
-                        , Html.Attributes.style "background" "transparent"
-                        , Html.Attributes.style "display" "flex"
-                        , Html.Attributes.style "align-items" "center"
-                        , Html.Attributes.style "justify-content" "center"
-                        , Html.Attributes.style "position" "absolute"
-                        , Html.Attributes.style "top" "0"
-                        ]
-                        [ Html.div
-                            [ Html.Attributes.style "height" "20px"
-                            , Html.Attributes.style "width" "20px"
-                            , Html.Attributes.style "border" "2px solid black"
-                            , Html.Attributes.style "border-radius" "100%"
-                            ]
-                            []
-                        ]
-                    ]
-                , Html.div
-                    [ Html.Attributes.style "display" "flex"
-                    , Html.Attributes.style "flex-direction" "row"
-                    , Html.Attributes.style "flex" "1"
-                    , Html.Attributes.style "width" "100%"
-                    , Html.Attributes.style "align-items" "center"
-                    , Html.Attributes.style "justify-content" "center"
-                    ]
-                    [ viewPad
-                        gameState.viewSize
-                        MovementPadDown
-                        MovementPadMoved
-                        MovementPadUp
-                        [ Html.Attributes.style "background-color" "red" ]
-                    , viewPad
-                        gameState.viewSize
-                        TargetPadDown
-                        TargetPadMoved
-                        TargetPadUp
-                        [ Html.Attributes.style "background-color" "blue" ]
-                    ]
-                ]
+        Playing playingState ->
+            Html.Lazy.lazy5 viewPlaying
+                playingState.world
+                playingState.teams
+                playingState.cameraXRotationAngle
+                playingState.cameraZRotationAngle
+                playingState.viewSize
 
         PostGame postGameState ->
             let
@@ -1341,6 +1355,7 @@ main =
                 Sub.batch
                     [ Browser.Events.onAnimationFrameDelta Delta
                     , gameUpdated GameUpdated
+                    , bodiesUpdated BodiesUpdated
                     ]
         , update = update
         }
@@ -1380,3 +1395,6 @@ port requestShoot : { playerId : String, position : { x : Float, y : Float, z : 
 
 
 port gameUpdated : (Json.Encode.Value -> msg) -> Sub msg
+
+
+port bodiesUpdated : (Json.Encode.Value -> msg) -> Sub msg

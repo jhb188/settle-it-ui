@@ -50,12 +50,12 @@ const app = Elm.Main.init({
 });
 
 const attachGameChannelListeners = (gc) => {
-  // gc.on("players:updated", ({ players }) => {
-  //   app.ports.playersUpdated.send(players);
-  // });
-
   gc.on("game:updated", (gameState) => {
     app.ports.gameUpdated.send(gameState);
+  });
+
+  gc.on("bodies:updated", (bodiesState) => {
+    app.ports.bodiesUpdated.send(bodiesState);
   });
 };
 

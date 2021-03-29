@@ -1,4 +1,4 @@
-module Server.State exposing (State, Status(..), decoder)
+module Server.State exposing (State, Status(..), bodiesStateDecoder, decoder)
 
 import BodyData
 import Json.Decode
@@ -25,6 +25,12 @@ type alias State =
     }
 
 
+type alias BodiesState =
+    { bodies : List (Physics.Body.Body BodyData.Data)
+    , lastUpdated : Int
+    }
+
+
 statusDecoder : Json.Decode.Decoder Status
 statusDecoder =
     Json.Decode.map
@@ -43,6 +49,13 @@ statusDecoder =
                     Finished
         )
         Json.Decode.string
+
+
+bodiesStateDecoder : String -> Json.Decode.Decoder BodiesState
+bodiesStateDecoder playerId =
+    Json.Decode.map2 BodiesState
+        (Json.Decode.field "bodies" (Server.Body.physicsBodiesDecoder playerId))
+        (Json.Decode.field "last_updated" Json.Decode.int)
 
 
 decoder : String -> Json.Decode.Decoder State
