@@ -24,4 +24,5 @@ type alias Data =
     , class : Class
     , hp : Int
     , id : String
+    , teamId : Maybe String
     }

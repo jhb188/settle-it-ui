@@ -36,7 +36,6 @@ import Quantity
 import Scene3d
 import Scene3d.Material
 import Scene3d.Mesh
-import Server.Body
 import Server.Player
 import Server.State
 import Server.Team
@@ -153,7 +152,7 @@ fovAngle =
 
 floor : Physics.Body.Body BodyData.Data
 floor =
-    Physics.Body.plane { mesh = WebGL.triangles [], class = Floor, hp = 0, id = "floor" }
+    Physics.Body.plane { mesh = WebGL.triangles [], class = Floor, hp = 0, id = "floor", teamId = Nothing }
 
 
 initWorld : Physics.World.World Data
@@ -954,7 +953,7 @@ viewPlaying world teams cameraXRotationAngle cameraZRotationAngle viewSize =
                                     else
                                         let
                                             color =
-                                                case List.Extra.find (.playerIds >> Set.member bodyData.id) teams of
+                                                case List.Extra.find (\team -> bodyData.teamId == Just team.id) teams of
                                                     Just team ->
                                                         team.color
 
@@ -1117,11 +1116,25 @@ view ( playerId, game ) =
 
         Lobby lobbyState ->
             let
-                playerIdsAssignedToTeams =
-                    List.foldl (.playerIds >> Set.union) Set.empty lobbyState.teams
-
                 unassignedPlayers =
-                    List.filter (not << (\p -> Set.member p.id playerIdsAssignedToTeams)) lobbyState.players
+                    List.filter
+                        (\p ->
+                            case p.teamId of
+                                Nothing ->
+                                    True
+
+                                Just _ ->
+                                    False
+                        )
+                        lobbyState.players
+
+                playersForTeam team =
+                    List.filter
+                        (\p -> p.teamId == Just team.id)
+                        lobbyState.players
+
+                onTeam team currentPlayerId =
+                    List.member currentPlayerId (List.map .id <| playersForTeam team)
 
                 viewPlayer player =
                     let
@@ -1188,6 +1201,10 @@ view ( playerId, game ) =
                     ]
                     (List.map
                         (\team ->
+                            let
+                                players =
+                                    playersForTeam team
+                            in
                             Html.div
                                 [ Html.Attributes.style "flex" "1"
                                 , Html.Attributes.style "box-shadow" "0 2px 4px 0 rgba(0,0,0,0.2)"
@@ -1200,23 +1217,18 @@ view ( playerId, game ) =
                                     []
                                     [ Html.h4 [ Html.Attributes.style "margin" "5px" ] [ Html.text team.cause ]
                                     , Html.div [ Html.Attributes.style "min-height" "20px" ]
-                                        [ if not <| Set.member lobbyState.playerId team.playerIds then
+                                        [ if not (onTeam team lobbyState.playerId) then
                                             Html.button [ Html.Events.onClick (JoinTeam team.id) ] [ Html.text "Join" ]
 
                                           else
                                             Html.span [] []
-                                        , if Set.isEmpty team.playerIds && team.ownerId == lobbyState.playerId then
+                                        , if List.isEmpty players && team.ownerId == lobbyState.playerId then
                                             Html.button [ Html.Events.onClick (DeleteTeam team.id) ] [ Html.text "Delete" ]
 
                                           else
                                             Html.span [] []
                                         ]
-                                    , Html.div []
-                                        (team.playerIds
-                                            |> Set.toList
-                                            |> List.filterMap (\pId -> List.Extra.find (\p -> p.id == pId) lobbyState.players)
-                                            |> List.map viewPlayer
-                                        )
+                                    , Html.div [] (List.map viewPlayer players)
                                     ]
                                 ]
                         )
@@ -1252,7 +1264,7 @@ view ( playerId, game ) =
         PostGame postGameState ->
             let
                 playersForTeam team =
-                    List.filter (\( p, _ ) -> Set.member p.id team.playerIds) postGameState.players
+                    List.filter (\( p, _ ) -> p.teamId == Just team.id) postGameState.players
 
                 playerIsAlive ( _, stats ) =
                     stats.hp > 0

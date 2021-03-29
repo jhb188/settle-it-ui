@@ -2,21 +2,14 @@ module Server.Team exposing (Team, decoder)
 
 import Color
 import Json.Decode
-import Set
 
 
 type alias Team =
     { id : String
     , ownerId : String
     , cause : String
-    , playerIds : Set.Set String
     , color : Color.Color
     }
-
-
-playerIdsDecoder : Json.Decode.Decoder (Set.Set String)
-playerIdsDecoder =
-    Json.Decode.map Set.fromList (Json.Decode.list Json.Decode.string)
 
 
 colorDecoder : Json.Decode.Decoder Color.Color
@@ -95,9 +88,8 @@ colorDecoder =
 
 decoder : Json.Decode.Decoder Team
 decoder =
-    Json.Decode.map5 Team
+    Json.Decode.map4 Team
         (Json.Decode.field "id" Json.Decode.string)
         (Json.Decode.field "owner_id" Json.Decode.string)
         (Json.Decode.field "cause" Json.Decode.string)
-        (Json.Decode.field "player_ids" playerIdsDecoder)
         (Json.Decode.field "color" colorDecoder)

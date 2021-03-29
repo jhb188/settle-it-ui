@@ -9,6 +9,7 @@ import Duration
 import Force
 import Frame3d
 import Json.Decode
+import Json.Decode.Pipeline
 import Length
 import Mass
 import Physics.Body
@@ -25,6 +26,7 @@ type alias Vector =
 
 type alias Body =
     { id : String
+    , teamId : Maybe String
     , translation : Vector
     , rotation : Vector
     , linearVelocity : Vector
@@ -62,15 +64,16 @@ classDecoder =
 
 decoder : Json.Decode.Decoder Body
 decoder =
-    Json.Decode.map8 Body
-        (Json.Decode.field "id" Json.Decode.string)
-        (Json.Decode.field "translation" vectorDecoder)
-        (Json.Decode.field "rotation" vectorDecoder)
-        (Json.Decode.field "linvel" vectorDecoder)
-        (Json.Decode.field "angvel" vectorDecoder)
-        (Json.Decode.field "mass" Json.Decode.float)
-        (Json.Decode.field "class" classDecoder)
-        (Json.Decode.field "hp" Json.Decode.int)
+    Json.Decode.succeed Body
+        |> Json.Decode.Pipeline.required "id" Json.Decode.string
+        |> Json.Decode.Pipeline.required "team_id" (Json.Decode.maybe Json.Decode.string)
+        |> Json.Decode.Pipeline.required "translation" vectorDecoder
+        |> Json.Decode.Pipeline.required "rotation" vectorDecoder
+        |> Json.Decode.Pipeline.required "linvel" vectorDecoder
+        |> Json.Decode.Pipeline.required "angvel" vectorDecoder
+        |> Json.Decode.Pipeline.required "mass" Json.Decode.float
+        |> Json.Decode.Pipeline.required "class" classDecoder
+        |> Json.Decode.Pipeline.required "hp" Json.Decode.int
 
 
 bodiesDecoder : Json.Decode.Decoder (List Body)
@@ -157,16 +160,17 @@ getDefaultBody myId body =
                         body.class
                 , hp = body.hp
                 , id = body.id
+                , teamId = body.teamId
                 }
                 |> Physics.Body.withDamping { linear = 0.0, angular = 1.0 }
 
         Bullet ->
             Physics.Body.sphere
                 (Sphere3d.atOrigin (Length.centimeters 5))
-                { mesh = WebGL.triangles [], class = BodyData.Bullet, hp = 0, id = "test" }
+                { mesh = WebGL.triangles [], class = BodyData.Bullet, hp = 0, id = "test", teamId = Nothing }
                 |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams 50))
 
         _ ->
             Physics.Body.sphere
                 (Sphere3d.atOrigin (Length.feet 1))
-                { mesh = WebGL.triangles [], class = BodyData.Test, hp = 0, id = "origin" }
+                { mesh = WebGL.triangles [], class = BodyData.Test, hp = 0, id = "origin", teamId = Nothing }
