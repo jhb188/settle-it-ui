@@ -4,7 +4,7 @@ import Acceleration
 import Angle
 import Axis3d
 import Block3d
-import BodyData exposing (Class(..), Data)
+import BodyData exposing (Class(..), Data, Dimensions(..))
 import Browser
 import Browser.Dom
 import Browser.Events
@@ -39,13 +39,17 @@ import Scene3d.Mesh
 import Server.Player
 import Server.State
 import Server.Team
-import Set
 import Sphere3d
 import String
 import Task
 import Vector3d
 import Viewpoint3d
 import WebGL
+
+
+useClientPhysics : Bool
+useClientPhysics =
+    False
 
 
 type alias Flags =
@@ -150,18 +154,12 @@ fovAngle =
     Angle.degrees 30
 
 
-floor : Physics.Body.Body BodyData.Data
-floor =
-    Physics.Body.plane { mesh = WebGL.triangles [], class = Floor, hp = 0, id = "floor", teamId = Nothing }
-
-
 initWorld : Physics.World.World Data
 initWorld =
     Physics.World.empty
         |> Physics.World.withGravity
-            (Acceleration.gees 1)
+            (Acceleration.metersPerSecondSquared 9.80665)
             Direction3d.negativeZ
-        |> Physics.World.add floor
 
 
 updateClass :
@@ -531,7 +529,7 @@ applyShoot gameState =
             getLookAxis gameState.world gameState.cameraXRotationAngle gameState.cameraZRotationAngle
 
         projectileStartPoint =
-            Point3d.along projectileOrientation (Length.centimeters 25)
+            Point3d.along projectileOrientation (Length.centimeters 30)
 
         projectile =
             Physics.Body.particle { class = Bullet, mesh = WebGL.triangles [], hp = 0 }
@@ -618,15 +616,19 @@ update msg ( playerId, game ) =
     ( ( playerId, nextGame ), nextCmd )
 
 
-simulatePhysics : Physics.World.World Data -> Float -> Physics.World.World Data
-simulatePhysics world ms =
-    Physics.World.simulate (Duration.milliseconds ms) world
+simulatePhysics : Float -> Physics.World.World Data -> Physics.World.World Data
+simulatePhysics ms world =
+    if useClientPhysics then
+        Physics.World.simulate (Duration.milliseconds ms) world
+
+    else
+        world
 
 
 getNextSimulatedPlayingState : Float -> PlayingState -> PlayingState
 getNextSimulatedPlayingState ms gameState =
     { gameState
-        | world = simulatePhysics gameState.world ms
+        | world = simulatePhysics ms gameState.world
         , newBodiesUpdate = Nothing
         , msSinceLastServerUpdateApplied = gameState.msSinceLastServerUpdateApplied + ms
     }
@@ -709,17 +711,13 @@ updatePlaying msg gameState =
 
                                 clientServerDiscrepancyMs =
                                     (toFloat gameState.lastUpdated + gameState.msSinceLastServerUpdateApplied) - toFloat lastUpdated
-
-                                clientServerDiscrepancyErrorThresholdMs : Float
-                                clientServerDiscrepancyErrorThresholdMs =
-                                    300
-
-                                isServerStateInSync =
-                                    clientServerDiscrepancyMs < clientServerDiscrepancyErrorThresholdMs
                             in
-                            if isNewServerState && isServerStateInSync then
+                            if isNewServerState then
                                 { gameState
-                                    | world = addBodies bodies initWorld
+                                    | world =
+                                        initWorld
+                                            |> addBodies bodies
+                                            |> simulatePhysics clientServerDiscrepancyMs
                                     , lastUpdated = lastUpdated
                                     , newBodiesUpdate = Nothing
                                     , msSinceLastServerUpdateApplied = 0
@@ -911,31 +909,37 @@ viewPlaying world teams cameraXRotationAngle cameraZRotationAngle viewSize =
                                 Physics.Body.data body
                         in
                         case bodyData.class of
-                            Test ->
-                                Just <|
-                                    (Scene3d.sphereWithShadow
-                                        (Scene3d.Material.nonmetal
-                                            { baseColor = Color.red
-                                            , roughness = 0.4
-                                            }
-                                        )
-                                        (Sphere3d.atOrigin (Length.meters 0.5))
-                                        |> Scene3d.placeIn bodyFrame
-                                    )
-
-                            Floor ->
-                                Just <|
-                                    Scene3d.quad (Scene3d.Material.matte Color.lightCharcoal)
-                                        (Point3d.meters -100 -100 0)
-                                        (Point3d.meters -100 100 0)
-                                        (Point3d.meters 100 100 0)
-                                        (Point3d.meters 100 -100 0)
-
                             Bullet ->
                                 Just <|
                                     (Scene3d.sphere
                                         (Scene3d.Material.matte Color.blue)
                                         (Sphere3d.atOrigin (Length.centimeters 5))
+                                        |> Scene3d.placeIn bodyFrame
+                                    )
+
+                            Obstacle ->
+                                Just <|
+                                    (Scene3d.blockWithShadow
+                                        (Scene3d.Material.nonmetal
+                                            { baseColor =
+                                                case bodyData.id of
+                                                    "floor" ->
+                                                        Color.lightBrown
+
+                                                    _ ->
+                                                        Color.lightCharcoal
+                                            , roughness = 0.5
+                                            }
+                                        )
+                                        (Block3d.centeredOn Frame3d.atOrigin
+                                            (case bodyData.dimensions of
+                                                Block x y z ->
+                                                    ( Length.meters x, Length.meters y, Length.meters z )
+
+                                                None ->
+                                                    ( Length.meters 1, Length.meters 1, Length.meters 1 )
+                                            )
+                                        )
                                         |> Scene3d.placeIn bodyFrame
                                     )
 
@@ -973,6 +977,18 @@ viewPlaying world teams cameraXRotationAngle cameraZRotationAngle viewSize =
                                                 |> Scene3d.placeIn bodyFrame
                                             , viewHealthBar body (Viewpoint3d.xDirection viewpoint)
                                             ]
+
+                            Test ->
+                                Just <|
+                                    (Scene3d.sphereWithShadow
+                                        (Scene3d.Material.nonmetal
+                                            { baseColor = Color.red
+                                            , roughness = 0.4
+                                            }
+                                        )
+                                        (Sphere3d.atOrigin (Length.meters 0.5))
+                                        |> Scene3d.placeIn bodyFrame
+                                    )
 
                             _ ->
                                 Nothing
@@ -1371,9 +1387,6 @@ main =
                     ]
         , update = update
         }
-
-
-port createGame : { playerId : String, topic : String } -> Cmd msg
 
 
 port joinGame : { playerId : String, gameId : Maybe String, topic : Maybe String } -> Cmd msg

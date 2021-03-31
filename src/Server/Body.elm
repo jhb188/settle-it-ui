@@ -1,8 +1,9 @@
-module Server.Body exposing (..)
+module Server.Body exposing (Body, physicsBodiesDecoder)
 
 import Angle
 import Axis3d
-import BodyData exposing (Class(..))
+import Block3d
+import BodyData exposing (Class(..), Dimensions(..))
 import Cylinder3d
 import Direction3d
 import Duration
@@ -31,6 +32,7 @@ type alias Body =
     , rotation : Vector
     , linearVelocity : Vector
     , angularVelocity : Vector
+    , dimensions : Vector
     , mass : Float
     , class : Class
     , hp : Int
@@ -57,6 +59,9 @@ classDecoder =
                     "bullet" ->
                         Bullet
 
+                    "obstacle" ->
+                        Obstacle
+
                     _ ->
                         Test
             )
@@ -66,13 +71,14 @@ decoder : Json.Decode.Decoder Body
 decoder =
     Json.Decode.succeed Body
         |> Json.Decode.Pipeline.required "id" Json.Decode.string
-        |> Json.Decode.Pipeline.required "team_id" (Json.Decode.maybe Json.Decode.string)
-        |> Json.Decode.Pipeline.required "translation" vectorDecoder
-        |> Json.Decode.Pipeline.required "rotation" vectorDecoder
-        |> Json.Decode.Pipeline.required "linvel" vectorDecoder
-        |> Json.Decode.Pipeline.required "angvel" vectorDecoder
-        |> Json.Decode.Pipeline.required "mass" Json.Decode.float
-        |> Json.Decode.Pipeline.required "class" classDecoder
+        |> Json.Decode.Pipeline.required "tid" (Json.Decode.maybe Json.Decode.string)
+        |> Json.Decode.Pipeline.required "tra" vectorDecoder
+        |> Json.Decode.Pipeline.required "rot" vectorDecoder
+        |> Json.Decode.Pipeline.required "lv" vectorDecoder
+        |> Json.Decode.Pipeline.required "av" vectorDecoder
+        |> Json.Decode.Pipeline.required "d" vectorDecoder
+        |> Json.Decode.Pipeline.required "m" Json.Decode.float
+        |> Json.Decode.Pipeline.required "cl" classDecoder
         |> Json.Decode.Pipeline.required "hp" Json.Decode.int
 
 
@@ -84,13 +90,6 @@ bodiesDecoder =
 physicsBodiesDecoder : String -> Json.Decode.Decoder (List (Physics.Body.Body BodyData.Data))
 physicsBodiesDecoder myId =
     Json.Decode.list (Json.Decode.map (toPhysicsBody myId) decoder)
-
-
-
--- F = ma
--- v = at
--- a = v / t
--- F = (mv / t)
 
 
 toPhysicsBody : String -> Body -> Physics.Body.Body BodyData.Data
@@ -161,16 +160,30 @@ getDefaultBody myId body =
                 , hp = body.hp
                 , id = body.id
                 , teamId = body.teamId
+                , dimensions = None
                 }
                 |> Physics.Body.withDamping { linear = 0.0, angular = 1.0 }
 
         Bullet ->
             Physics.Body.sphere
                 (Sphere3d.atOrigin (Length.centimeters 5))
-                { mesh = WebGL.triangles [], class = BodyData.Bullet, hp = 0, id = "test", teamId = Nothing }
+                { mesh = WebGL.triangles [], class = BodyData.Bullet, hp = 0, id = body.id, teamId = Nothing, dimensions = None }
                 |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams 50))
+
+        Obstacle ->
+            let
+                { x, y, z } =
+                    body.dimensions
+            in
+            Physics.Body.block
+                (Block3d.centeredOn
+                    Frame3d.atOrigin
+                    ( Length.meters x, Length.meters y, Length.meters z )
+                )
+                { mesh = WebGL.triangles [], class = BodyData.Obstacle, hp = 0, id = body.id, teamId = Nothing, dimensions = Block x y z }
+                |> Physics.Body.withBehavior Physics.Body.static
 
         _ ->
             Physics.Body.sphere
                 (Sphere3d.atOrigin (Length.feet 1))
-                { mesh = WebGL.triangles [], class = BodyData.Test, hp = 0, id = "origin", teamId = Nothing }
+                { mesh = WebGL.triangles [], class = BodyData.Test, hp = 0, id = "origin", teamId = Nothing, dimensions = None }

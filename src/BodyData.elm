@@ -1,4 +1,4 @@
-module BodyData exposing (Class(..), Data, Vertex)
+module BodyData exposing (Class(..), Data, Dimensions(..), Vertex)
 
 import Math.Vector3 exposing (Vec3)
 import WebGL
@@ -10,13 +10,18 @@ type alias Vertex =
     }
 
 
+type Dimensions
+    = Block Float Float Float
+    | None
+
+
 type Class
     = Me
     | NPC
     | Wall
-    | Floor
     | Test
     | Bullet
+    | Obstacle
 
 
 type alias Data =
@@ -25,4 +30,5 @@ type alias Data =
     , hp : Int
     , id : String
     , teamId : Maybe String
+    , dimensions : Dimensions
     }
