@@ -22,7 +22,10 @@ import WebGL
 
 
 type alias Vector =
-    { x : Float, y : Float, z : Float }
+    { x : Float
+    , y : Float
+    , z : Float
+    }
 
 
 type alias Body =
@@ -80,11 +83,6 @@ decoder =
         |> Json.Decode.Pipeline.required "m" Json.Decode.float
         |> Json.Decode.Pipeline.required "cl" classDecoder
         |> Json.Decode.Pipeline.required "hp" Json.Decode.int
-
-
-bodiesDecoder : Json.Decode.Decoder (List Body)
-bodiesDecoder =
-    Json.Decode.list decoder
 
 
 physicsBodiesDecoder : String -> Json.Decode.Decoder (List (Physics.Body.Body BodyData.Data))

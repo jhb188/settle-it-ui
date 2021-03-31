@@ -28,8 +28,10 @@ import List.Extra
 import Mass
 import Math.Vector2 as Vec2 exposing (Vec2, vec2)
 import Physics.Body
+import Physics.Body.Extra exposing (getEyePoint)
 import Physics.Coordinates
 import Physics.World
+import Physics.World.Extra exposing (getLookAxis, getMe, updateMe)
 import Pixels
 import Point3d
 import Quantity
@@ -57,7 +59,7 @@ type alias Flags =
     }
 
 
-type alias BeforeLobbyState =
+type alias PreLobbyState =
     { gameCode : String
     , topic : String
     , playerId : PlayerId
@@ -119,13 +121,32 @@ type alias Model =
 
 
 type Game
-    = BeforeLobby BeforeLobbyState
+    = PreLobby PreLobbyState
     | Lobby LobbyState
     | Playing PlayingState
     | PostGame PostGameState
 
 
-type Msg
+type PreLobbyMsg
+    = GameCodeInputUpdated String
+    | TopicUpdated String
+    | JoinGame
+    | CreateGame
+
+
+type LobbyMsg
+    = TeamNameInputUpdated String
+    | CreateTeam
+    | EditPlayerName
+    | SavePlayerName
+    | PlayerNameInputUpdated String
+    | JoinTeam String
+    | DeleteTeam String
+    | StartGame
+    | LobbyStateUpdated Server.State.State
+
+
+type PlayingMsg
     = Delta Float
     | ViewportChanged Browser.Dom.Viewport
     | MovementPadDown Vec2
@@ -134,20 +155,14 @@ type Msg
     | TargetPadDown Vec2
     | TargetPadMoved Vec2
     | TargetPadUp
-    | GameUpdated Json.Encode.Value
     | BodiesUpdated Json.Encode.Value
-    | GameCodeInputUpdated String
-    | TopicUpdated String
-    | JoinGame
-    | CreateGame
-    | TeamNameInputUpdated String
-    | CreateTeam
-    | EditPlayerName
-    | SavePlayerName
-    | PlayerNameInputUpdated String
-    | JoinTeam String
-    | DeleteTeam String
-    | StartGame
+
+
+type Msg
+    = GameUpdated Json.Encode.Value
+    | PreLobbyMsg PreLobbyMsg
+    | LobbyMsg LobbyMsg
+    | PlayingMsg PlayingMsg
 
 
 fovAngle : Angle.Angle
@@ -161,70 +176,6 @@ initWorld =
         |> Physics.World.withGravity
             (Acceleration.metersPerSecondSquared 9.80665)
             Direction3d.negativeZ
-
-
-updateClass :
-    Class
-    -> (Physics.Body.Body Data -> Physics.Body.Body Data)
-    -> Physics.World.World Data
-    -> Physics.World.World Data
-updateClass class transformer world =
-    let
-        f body =
-            let
-                data =
-                    Physics.Body.data body
-            in
-            if data.class == class then
-                transformer body
-
-            else
-                body
-    in
-    Physics.World.update f world
-
-
-updateMe : (Physics.Body.Body Data -> Physics.Body.Body Data) -> Physics.World.World Data -> Physics.World.World Data
-updateMe =
-    updateClass Me
-
-
-hasClass : Class -> Physics.Body.Body Data -> Bool
-hasClass class body =
-    let
-        data =
-            Physics.Body.data body
-    in
-    data.class == class
-
-
-getMe : Physics.World.World Data -> Maybe (Physics.Body.Body Data)
-getMe =
-    Physics.World.bodies >> List.Extra.find (hasClass Me)
-
-
-getEyePoint : Physics.Body.Body Data -> Point3d.Point3d Length.Meters Physics.Coordinates.WorldCoordinates
-getEyePoint me =
-    Physics.Body.originPoint me
-        |> Point3d.translateBy (Vector3d.meters 0 0 0.5)
-
-
-getLookAxis : Physics.World.World BodyData.Data -> Float -> Float -> Axis3d.Axis3d Length.Meters Physics.Coordinates.WorldCoordinates
-getLookAxis world xRotationDeg zRotationDeg =
-    case getMe world of
-        Just me ->
-            Frame3d.atOrigin
-                |> Frame3d.rotateAroundOwn
-                    Frame3d.zAxis
-                    (Angle.degrees zRotationDeg)
-                |> Frame3d.rotateAroundOwn
-                    Frame3d.xAxis
-                    (Angle.degrees xRotationDeg)
-                |> Frame3d.yAxis
-                |> Axis3d.moveTo (getEyePoint me)
-
-        Nothing ->
-            Frame3d.yAxis Frame3d.atOrigin
 
 
 isAlive : Physics.Body.Body Data -> Bool
@@ -247,7 +198,7 @@ addBodies bodies world =
 init : Flags -> ( Model, Cmd Msg )
 init { playerId } =
     ( ( playerId
-      , BeforeLobby
+      , PreLobby
             { gameCode = ""
             , topic = ""
             , playerId = playerId
@@ -330,7 +281,7 @@ initPlaying playerId { bodies, lastUpdated, teams } =
         , shouldShootNextFrame = False
         , teams = teams
         }
-    , Task.perform ViewportChanged Browser.Dom.getViewport
+    , Task.perform (PlayingMsg << ViewportChanged) Browser.Dom.getViewport
     )
 
 
@@ -370,7 +321,7 @@ shootThresholdMs =
     300.0
 
 
-updateMovement : Float -> Maybe (Physics.Body.Body BodyData.Data) -> PlayingState -> ( PlayingState, Cmd Msg )
+updateMovement : Float -> Maybe (Physics.Body.Body BodyData.Data) -> PlayingState -> ( PlayingState, Cmd PlayingMsg )
 updateMovement ms maybeMe gameState =
     case gameState.movementPadOffset of
         Just relativePos ->
@@ -443,7 +394,7 @@ updateMovement ms maybeMe gameState =
             ( gameState, Cmd.none )
 
 
-updateTarget : Float -> PlayingState -> ( PlayingState, Cmd Msg )
+updateTarget : Float -> PlayingState -> ( PlayingState, Cmd PlayingMsg )
 updateTarget ms gameState =
     case gameState.targetPadOffset of
         Just relativePos ->
@@ -490,7 +441,7 @@ updateTarget ms gameState =
             ( gameState, Cmd.none )
 
 
-applyActions : Maybe (Physics.Body.Body BodyData.Data) -> PlayingState -> Float -> ( PlayingState, Cmd Msg )
+applyActions : Maybe (Physics.Body.Body BodyData.Data) -> PlayingState -> Float -> ( PlayingState, Cmd PlayingMsg )
 applyActions previousMe gameState ms =
     let
         playerIsAlive =
@@ -523,14 +474,14 @@ applyActions previousMe gameState ms =
     ( { gameStateShootApplied | shouldJumpNextFrame = False, shouldShootNextFrame = False }, Cmd.batch [ movementCmds, rotationCmds, jumpCmd, shootCmd ] )
 
 
-applyJump : PlayingState -> ( PlayingState, Cmd Msg )
+applyJump : PlayingState -> ( PlayingState, Cmd PlayingMsg )
 applyJump gameState =
     ( gameState
     , requestJump gameState.playerId
     )
 
 
-applyShoot : PlayingState -> ( PlayingState, Cmd Msg )
+applyShoot : PlayingState -> ( PlayingState, Cmd PlayingMsg )
 applyShoot gameState =
     let
         projectileOrientation =
@@ -565,15 +516,15 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update msg ( playerId, game ) =
     let
         ( nextGame, nextCmd ) =
-            case msg of
-                GameUpdated gameUpdateData ->
+            case ( msg, game ) of
+                ( GameUpdated gameUpdateData, _ ) ->
                     case Json.Decode.decodeValue (Server.State.decoder playerId) gameUpdateData of
                         Err _ ->
                             ( game, Cmd.none )
 
                         Ok serverState ->
                             case ( game, serverState.status ) of
-                                ( BeforeLobby _, _ ) ->
+                                ( PreLobby _, _ ) ->
                                     initLobby playerId serverState
 
                                 ( Lobby _, Server.State.Playing ) ->
@@ -582,9 +533,9 @@ update msg ( playerId, game ) =
                                 ( Lobby lobbyState, _ ) ->
                                     let
                                         ( nextLobbyState, cmds ) =
-                                            updateLobby msg lobbyState
+                                            updateLobby (LobbyStateUpdated serverState) lobbyState
                                     in
-                                    ( Lobby nextLobbyState, cmds )
+                                    ( Lobby nextLobbyState, Cmd.map LobbyMsg cmds )
 
                                 ( Playing _, Server.State.Finished ) ->
                                     initPostGame playerId serverState
@@ -595,31 +546,32 @@ update msg ( playerId, game ) =
                                 ( PostGame _, _ ) ->
                                     initPostGame playerId serverState
 
+                ( PreLobbyMsg preLobbyMsg, PreLobby preLobbyState ) ->
+                    let
+                        ( nextPreLobbyState, cmds ) =
+                            updatePreLobby preLobbyMsg preLobbyState
+                    in
+                    ( PreLobby nextPreLobbyState, Cmd.map PreLobbyMsg cmds )
+
+                ( LobbyMsg lobbyMsg, Lobby lobbyState ) ->
+                    let
+                        ( nextLobbyState, cmds ) =
+                            updateLobby lobbyMsg lobbyState
+                    in
+                    ( Lobby nextLobbyState, Cmd.map LobbyMsg cmds )
+
+                ( PlayingMsg playingMsg, Playing playingState ) ->
+                    let
+                        ( nextPlayingState, cmds ) =
+                            updatePlaying playingMsg playingState
+                    in
+                    ( Playing nextPlayingState, Cmd.map PlayingMsg cmds )
+
+                ( _, PostGame postGameState ) ->
+                    ( PostGame postGameState, Cmd.none )
+
                 _ ->
-                    case game of
-                        BeforeLobby beforeLobbyState ->
-                            let
-                                ( nextBeforeLobbyState, cmds ) =
-                                    updateBeforeLobby msg beforeLobbyState
-                            in
-                            ( BeforeLobby nextBeforeLobbyState, cmds )
-
-                        Lobby lobbyState ->
-                            let
-                                ( nextLobbyState, cmds ) =
-                                    updateLobby msg lobbyState
-                            in
-                            ( Lobby nextLobbyState, cmds )
-
-                        Playing gameState ->
-                            let
-                                ( nextPlayingState, cmds ) =
-                                    updatePlaying msg gameState
-                            in
-                            ( Playing nextPlayingState, cmds )
-
-                        PostGame postGameState ->
-                            ( PostGame postGameState, Cmd.none )
+                    ( game, Cmd.none )
     in
     ( ( playerId, nextGame ), nextCmd )
 
@@ -642,26 +594,23 @@ getNextSimulatedPlayingState ms gameState =
     }
 
 
-updateBeforeLobby : Msg -> BeforeLobbyState -> ( BeforeLobbyState, Cmd Msg )
-updateBeforeLobby msg beforeLobbyState =
+updatePreLobby : PreLobbyMsg -> PreLobbyState -> ( PreLobbyState, Cmd PreLobbyMsg )
+updatePreLobby msg preLobbyState =
     case msg of
         GameCodeInputUpdated newGameCode ->
-            ( { beforeLobbyState | gameCode = newGameCode }, Cmd.none )
+            ( { preLobbyState | gameCode = newGameCode }, Cmd.none )
 
         TopicUpdated newTopicName ->
-            ( { beforeLobbyState | topic = newTopicName }, Cmd.none )
+            ( { preLobbyState | topic = newTopicName }, Cmd.none )
 
         JoinGame ->
-            ( beforeLobbyState, joinGame { playerId = beforeLobbyState.playerId, gameId = Just beforeLobbyState.gameCode, topic = Nothing } )
+            ( preLobbyState, joinGame { playerId = preLobbyState.playerId, gameId = Just preLobbyState.gameCode, topic = Nothing } )
 
         CreateGame ->
-            ( beforeLobbyState, joinGame { playerId = beforeLobbyState.playerId, gameId = Nothing, topic = Just beforeLobbyState.topic } )
-
-        _ ->
-            ( beforeLobbyState, Cmd.none )
+            ( preLobbyState, joinGame { playerId = preLobbyState.playerId, gameId = Nothing, topic = Just preLobbyState.topic } )
 
 
-updateLobby : Msg -> LobbyState -> ( LobbyState, Cmd Msg )
+updateLobby : LobbyMsg -> LobbyState -> ( LobbyState, Cmd LobbyMsg )
 updateLobby msg lobbyState =
     case msg of
         TeamNameInputUpdated newTeamName ->
@@ -670,13 +619,8 @@ updateLobby msg lobbyState =
         CreateTeam ->
             ( { lobbyState | teamNameInput = "" }, createTeam { playerId = lobbyState.playerId, name = lobbyState.teamNameInput } )
 
-        GameUpdated gameUpdateData ->
-            case Json.Decode.decodeValue (Server.State.decoder lobbyState.playerId) gameUpdateData of
-                Err _ ->
-                    ( lobbyState, Cmd.none )
-
-                Ok nextGameData ->
-                    ( { lobbyState | players = nextGameData.players, teams = nextGameData.teams }, Cmd.none )
+        LobbyStateUpdated nextGameData ->
+            ( { lobbyState | players = nextGameData.players, teams = nextGameData.teams }, Cmd.none )
 
         EditPlayerName ->
             ( { lobbyState | isEditingPlayerName = True }, Cmd.none )
@@ -701,11 +645,8 @@ updateLobby msg lobbyState =
         StartGame ->
             ( lobbyState, startGame () )
 
-        _ ->
-            ( lobbyState, Cmd.none )
 
-
-updatePlaying : Msg -> PlayingState -> ( PlayingState, Cmd Msg )
+updatePlaying : PlayingMsg -> PlayingState -> ( PlayingState, Cmd PlayingMsg )
 updatePlaying msg gameState =
     case msg of
         Delta ms ->
@@ -795,17 +736,14 @@ updatePlaying msg gameState =
             else
                 ( nextModel, Cmd.none )
 
-        _ ->
-            ( gameState, Cmd.none )
-
 
 viewPad :
     Float
-    -> (Vec2 -> Msg)
-    -> (Vec2 -> Msg)
-    -> Msg
-    -> List (Html.Attribute Msg)
-    -> Html Msg
+    -> (Vec2 -> msg)
+    -> (Vec2 -> msg)
+    -> msg
+    -> List (Html.Attribute msg)
+    -> Html msg
 viewPad viewSize onDown onMove onUp attrs =
     Html.div
         ([ Html.Attributes.style "touch-action" "none"
@@ -874,7 +812,7 @@ viewPlaying :
     -> Float
     -> Float
     -> Float
-    -> Html Msg
+    -> Html PlayingMsg
 viewPlaying world teams cameraXRotationAngle cameraZRotationAngle viewSize =
     let
         viewpoint =
@@ -1072,220 +1010,231 @@ viewPlaying world teams cameraXRotationAngle cameraZRotationAngle viewSize =
         ]
 
 
-view : Model -> Html Msg
-view ( playerId, game ) =
-    case game of
-        BeforeLobby beforeLobbyState ->
-            Html.div
-                [ Html.Attributes.style "flex" "1"
-                , Html.Attributes.style "flex-direction" "column"
-                , Html.Attributes.style "align-items" "center"
-                , Html.Attributes.style "justify-content" "space-around"
-                , Html.Attributes.style "height" "75%"
-                , Html.Attributes.style "display" "flex"
-                ]
-                [ Html.div
-                    [ Html.Attributes.style "display" "flex"
-                    , Html.Attributes.style "flex" "1"
-                    , Html.Attributes.style "flex-direction" "column"
-                    , Html.Attributes.style "align-items" "center"
-                    , Html.Attributes.style "justify-content" "center"
+viewPreLobby : PreLobbyState -> Html PreLobbyMsg
+viewPreLobby preLobbyState =
+    Html.div
+        [ Html.Attributes.style "flex" "1"
+        , Html.Attributes.style "flex-direction" "column"
+        , Html.Attributes.style "align-items" "center"
+        , Html.Attributes.style "justify-content" "space-around"
+        , Html.Attributes.style "height" "75%"
+        , Html.Attributes.style "display" "flex"
+        ]
+        [ Html.div
+            [ Html.Attributes.style "display" "flex"
+            , Html.Attributes.style "flex" "1"
+            , Html.Attributes.style "flex-direction" "column"
+            , Html.Attributes.style "align-items" "center"
+            , Html.Attributes.style "justify-content" "center"
+            ]
+            [ Html.div [] [ Html.text "Join a debate topic" ]
+            , Html.div []
+                [ Html.input
+                    [ Html.Events.onInput GameCodeInputUpdated
+                    , Html.Attributes.value preLobbyState.gameCode
+                    , Html.Attributes.placeholder "Enter a game code"
                     ]
-                    [ Html.div [] [ Html.text "Join a debate topic" ]
-                    , Html.div []
+                    []
+                , Html.button
+                    [ Html.Attributes.disabled (String.length preLobbyState.gameCode /= 4)
+                    , Html.Events.onClick JoinGame
+                    ]
+                    [ Html.text "Join" ]
+                ]
+            ]
+        , Html.div
+            [ Html.Attributes.style "display" "flex"
+            , Html.Attributes.style "flex" "1"
+            , Html.Attributes.style "flex-direction" "column"
+            , Html.Attributes.style "align-items" "center"
+            , Html.Attributes.style "justify-content" "center"
+            ]
+            [ Html.div [] [ Html.text "OR" ]
+            ]
+        , Html.div
+            [ Html.Attributes.style "display" "flex"
+            , Html.Attributes.style "flex" "1"
+            , Html.Attributes.style "flex-direction" "column"
+            , Html.Attributes.style "align-items" "center"
+            , Html.Attributes.style "justify-content" "center"
+            ]
+            [ Html.div [] [ Html.text "Start a new debate topic (like \"Where should we eat tonight?\")" ]
+            , Html.div []
+                [ Html.textarea
+                    [ Html.Events.onInput TopicUpdated
+                    , Html.Attributes.value preLobbyState.topic
+                    , Html.Attributes.style "width" "100%"
+                    , Html.Attributes.placeholder "Enter a topic"
+                    ]
+                    []
+                ]
+            , Html.button
+                [ Html.Attributes.disabled (String.length preLobbyState.topic == 0)
+                , Html.Events.onClick CreateGame
+                ]
+                [ Html.text "Start" ]
+            ]
+        ]
+
+
+viewLobby : LobbyState -> Html LobbyMsg
+viewLobby lobbyState =
+    let
+        unassignedPlayers =
+            List.filter
+                (\p ->
+                    case p.teamId of
+                        Nothing ->
+                            True
+
+                        Just _ ->
+                            False
+                )
+                lobbyState.players
+
+        playersForTeam team =
+            List.filter
+                (\p -> p.teamId == Just team.id)
+                lobbyState.players
+
+        onTeam team currentPlayerId =
+            List.member currentPlayerId (List.map .id <| playersForTeam team)
+
+        viewPlayer player =
+            let
+                playerName =
+                    case player.name of
+                        "" ->
+                            Html.span [ Html.Attributes.style "font-style" "italic" ] [ Html.text "Anonymous Player" ]
+
+                        name ->
+                            Html.span [] [ Html.text name ]
+            in
+            if player.id == lobbyState.playerId then
+                if lobbyState.isEditingPlayerName then
+                    Html.div []
                         [ Html.input
-                            [ Html.Events.onInput GameCodeInputUpdated
-                            , Html.Attributes.value beforeLobbyState.gameCode
-                            , Html.Attributes.placeholder "Enter a game code"
+                            [ Html.Attributes.value lobbyState.playerNameInput
+                            , Html.Events.onInput PlayerNameInputUpdated
                             ]
                             []
-                        , Html.button
-                            [ Html.Attributes.disabled (String.length beforeLobbyState.gameCode /= 4)
-                            , Html.Events.onClick JoinGame
+                        , Html.button [ Html.Events.onClick SavePlayerName ]
+                            [ Html.text "Save"
                             ]
-                            [ Html.text "Join" ]
                         ]
-                    ]
-                , Html.div
-                    [ Html.Attributes.style "display" "flex"
-                    , Html.Attributes.style "flex" "1"
-                    , Html.Attributes.style "flex-direction" "column"
-                    , Html.Attributes.style "align-items" "center"
-                    , Html.Attributes.style "justify-content" "center"
-                    ]
-                    [ Html.div [] [ Html.text "OR" ]
-                    ]
-                , Html.div
-                    [ Html.Attributes.style "display" "flex"
-                    , Html.Attributes.style "flex" "1"
-                    , Html.Attributes.style "flex-direction" "column"
-                    , Html.Attributes.style "align-items" "center"
-                    , Html.Attributes.style "justify-content" "center"
-                    ]
-                    [ Html.div [] [ Html.text "Start a new debate topic (like \"Where should we eat tonight?\")" ]
-                    , Html.div []
-                        [ Html.textarea
-                            [ Html.Events.onInput TopicUpdated
-                            , Html.Attributes.value beforeLobbyState.topic
-                            , Html.Attributes.style "width" "100%"
-                            , Html.Attributes.placeholder "Enter a topic"
+
+                else
+                    Html.div []
+                        [ playerName
+                        , Html.button [ Html.Events.onClick EditPlayerName ]
+                            [ Html.text "Edit"
                             ]
-                            []
                         ]
-                    , Html.button
-                        [ Html.Attributes.disabled (String.length beforeLobbyState.topic == 0)
-                        , Html.Events.onClick CreateGame
-                        ]
-                        [ Html.text "Start" ]
+
+            else
+                Html.div []
+                    [ playerName
                     ]
+    in
+    Html.div []
+        [ Html.h1 [] [ Html.text lobbyState.gameId ]
+        , Html.h3 [] [ Html.text lobbyState.topic ]
+        , Html.div []
+            [ Html.button
+                [ Html.Attributes.disabled (List.length unassignedPlayers > 0)
+                , Html.Events.onClick StartGame
                 ]
+                [ Html.text "Start Game" ]
+            ]
+        , Html.div []
+            [ Html.input
+                [ Html.Attributes.placeholder "Team name"
+                , Html.Attributes.value lobbyState.teamNameInput
+                , Html.Events.onInput TeamNameInputUpdated
+                ]
+                []
+            , Html.button
+                [ Html.Events.onClick CreateTeam
+                , Html.Attributes.disabled (String.length lobbyState.teamNameInput == 0)
+                ]
+                [ Html.text "Create" ]
+            ]
+        , Html.div
+            [ Html.Attributes.style "display" "flex"
+            , Html.Attributes.style "flex-flow" "row wrap"
+            ]
+            (List.map
+                (\team ->
+                    let
+                        players =
+                            playersForTeam team
+                    in
+                    Html.div
+                        [ Html.Attributes.style "flex" "1"
+                        , Html.Attributes.style "box-shadow" "0 2px 4px 0 rgba(0,0,0,0.2)"
+                        , Html.Attributes.style "margin" "5px"
+                        , Html.Attributes.style "min-width" "150px"
+                        , Html.Attributes.style "padding" "20px"
+                        , Html.Attributes.style "border" ("2px solid " ++ Color.toCssString team.color)
+                        ]
+                        [ Html.div
+                            []
+                            [ Html.h4 [ Html.Attributes.style "margin" "5px" ] [ Html.text team.cause ]
+                            , Html.div [ Html.Attributes.style "min-height" "20px" ]
+                                [ if not (onTeam team lobbyState.playerId) then
+                                    Html.button [ Html.Events.onClick (JoinTeam team.id) ] [ Html.text "Join" ]
+
+                                  else
+                                    Html.span [] []
+                                , if List.isEmpty players && team.ownerId == lobbyState.playerId then
+                                    Html.button [ Html.Events.onClick (DeleteTeam team.id) ] [ Html.text "Delete" ]
+
+                                  else
+                                    Html.span [] []
+                                ]
+                            , Html.div [] (List.map viewPlayer players)
+                            ]
+                        ]
+                )
+                lobbyState.teams
+                ++ [ Html.div
+                        [ Html.Attributes.style "flex" "1"
+                        , Html.Attributes.style "box-shadow" "0 2px 4px 0 rgba(0,0,0,0.2)"
+                        , Html.Attributes.style "margin" "5px"
+                        , Html.Attributes.style "min-width" "150px"
+                        , Html.Attributes.style "padding" "20px"
+                        ]
+                        [ Html.div
+                            []
+                            [ Html.h4 [ Html.Attributes.style "margin" "5px" ]
+                                [ Html.text "Unassigned"
+                                ]
+                            , Html.div []
+                                (List.map viewPlayer unassignedPlayers)
+                            ]
+                        ]
+                   ]
+            )
+        ]
+
+
+view : Model -> Html Msg
+view ( _, game ) =
+    case game of
+        PreLobby preLobbyState ->
+            Html.map PreLobbyMsg <| viewPreLobby preLobbyState
 
         Lobby lobbyState ->
-            let
-                unassignedPlayers =
-                    List.filter
-                        (\p ->
-                            case p.teamId of
-                                Nothing ->
-                                    True
-
-                                Just _ ->
-                                    False
-                        )
-                        lobbyState.players
-
-                playersForTeam team =
-                    List.filter
-                        (\p -> p.teamId == Just team.id)
-                        lobbyState.players
-
-                onTeam team currentPlayerId =
-                    List.member currentPlayerId (List.map .id <| playersForTeam team)
-
-                viewPlayer player =
-                    let
-                        playerName =
-                            case player.name of
-                                "" ->
-                                    Html.span [ Html.Attributes.style "font-style" "italic" ] [ Html.text "Anonymous Player" ]
-
-                                name ->
-                                    Html.span [] [ Html.text name ]
-                    in
-                    if player.id == lobbyState.playerId then
-                        if lobbyState.isEditingPlayerName then
-                            Html.div []
-                                [ Html.input
-                                    [ Html.Attributes.value lobbyState.playerNameInput
-                                    , Html.Events.onInput PlayerNameInputUpdated
-                                    ]
-                                    []
-                                , Html.button [ Html.Events.onClick SavePlayerName ]
-                                    [ Html.text "Save"
-                                    ]
-                                ]
-
-                        else
-                            Html.div []
-                                [ playerName
-                                , Html.button [ Html.Events.onClick EditPlayerName ]
-                                    [ Html.text "Edit"
-                                    ]
-                                ]
-
-                    else
-                        Html.div []
-                            [ playerName
-                            ]
-            in
-            Html.div []
-                [ Html.h1 [] [ Html.text lobbyState.gameId ]
-                , Html.h3 [] [ Html.text lobbyState.topic ]
-                , Html.div []
-                    [ Html.button
-                        [ Html.Attributes.disabled (List.length unassignedPlayers > 0)
-                        , Html.Events.onClick StartGame
-                        ]
-                        [ Html.text "Start Game" ]
-                    ]
-                , Html.div []
-                    [ Html.input
-                        [ Html.Attributes.placeholder "Team name"
-                        , Html.Attributes.value lobbyState.teamNameInput
-                        , Html.Events.onInput TeamNameInputUpdated
-                        ]
-                        []
-                    , Html.button
-                        [ Html.Events.onClick CreateTeam
-                        , Html.Attributes.disabled (String.length lobbyState.teamNameInput == 0)
-                        ]
-                        [ Html.text "Create" ]
-                    ]
-                , Html.div
-                    [ Html.Attributes.style "display" "flex"
-                    , Html.Attributes.style "flex-flow" "row wrap"
-                    ]
-                    (List.map
-                        (\team ->
-                            let
-                                players =
-                                    playersForTeam team
-                            in
-                            Html.div
-                                [ Html.Attributes.style "flex" "1"
-                                , Html.Attributes.style "box-shadow" "0 2px 4px 0 rgba(0,0,0,0.2)"
-                                , Html.Attributes.style "margin" "5px"
-                                , Html.Attributes.style "min-width" "150px"
-                                , Html.Attributes.style "padding" "20px"
-                                , Html.Attributes.style "border" ("2px solid " ++ Color.toCssString team.color)
-                                ]
-                                [ Html.div
-                                    []
-                                    [ Html.h4 [ Html.Attributes.style "margin" "5px" ] [ Html.text team.cause ]
-                                    , Html.div [ Html.Attributes.style "min-height" "20px" ]
-                                        [ if not (onTeam team lobbyState.playerId) then
-                                            Html.button [ Html.Events.onClick (JoinTeam team.id) ] [ Html.text "Join" ]
-
-                                          else
-                                            Html.span [] []
-                                        , if List.isEmpty players && team.ownerId == lobbyState.playerId then
-                                            Html.button [ Html.Events.onClick (DeleteTeam team.id) ] [ Html.text "Delete" ]
-
-                                          else
-                                            Html.span [] []
-                                        ]
-                                    , Html.div [] (List.map viewPlayer players)
-                                    ]
-                                ]
-                        )
-                        lobbyState.teams
-                        ++ [ Html.div
-                                [ Html.Attributes.style "flex" "1"
-                                , Html.Attributes.style "box-shadow" "0 2px 4px 0 rgba(0,0,0,0.2)"
-                                , Html.Attributes.style "margin" "5px"
-                                , Html.Attributes.style "min-width" "150px"
-                                , Html.Attributes.style "padding" "20px"
-                                ]
-                                [ Html.div
-                                    []
-                                    [ Html.h4 [ Html.Attributes.style "margin" "5px" ]
-                                        [ Html.text "Unassigned"
-                                        ]
-                                    , Html.div []
-                                        (List.map viewPlayer unassignedPlayers)
-                                    ]
-                                ]
-                           ]
-                    )
-                ]
+            Html.map LobbyMsg <| viewLobby lobbyState
 
         Playing playingState ->
-            Html.Lazy.lazy5 viewPlaying
-                playingState.world
-                playingState.teams
-                playingState.cameraXRotationAngle
-                playingState.cameraZRotationAngle
-                playingState.viewSize
+            Html.map PlayingMsg <|
+                Html.Lazy.lazy5 viewPlaying
+                    playingState.world
+                    playingState.teams
+                    playingState.cameraXRotationAngle
+                    playingState.cameraZRotationAngle
+                    playingState.viewSize
 
         PostGame postGameState ->
             let
@@ -1389,11 +1338,16 @@ main =
         { init = init
         , view = view
         , subscriptions =
-            \_ ->
+            \model ->
                 Sub.batch
-                    [ Browser.Events.onAnimationFrameDelta Delta
+                    [ case model of
+                        ( _, Playing _ ) ->
+                            Browser.Events.onAnimationFrameDelta (PlayingMsg << Delta)
+
+                        _ ->
+                            Sub.none
                     , gameUpdated GameUpdated
-                    , bodiesUpdated BodiesUpdated
+                    , bodiesUpdated (PlayingMsg << BodiesUpdated)
                     ]
         , update = update
         }
