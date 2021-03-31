@@ -79,6 +79,7 @@ type alias LobbyState =
 type alias PlayingState =
     { playerId : String
     , viewSize : Float
+    , arena : Physics.World.World BodyData.Data
     , movementPadOrigin : Vec2
     , movementPadOffset : Maybe Vec2
     , movementPadHeldMs : Float
@@ -281,6 +282,12 @@ initLobby playerId serverState =
 initPlaying : PlayerId -> Server.State.State -> ( Game, Cmd Msg )
 initPlaying playerId { bodies, lastUpdated, teams } =
     let
+        arenaObstacles =
+            List.filter (Physics.Body.data >> .class >> (==) Obstacle) bodies
+
+        arena =
+            addBodies arenaObstacles initWorld
+
         world =
             addBodies bodies initWorld
 
@@ -306,6 +313,7 @@ initPlaying playerId { bodies, lastUpdated, teams } =
     ( Playing
         { playerId = playerId
         , viewSize = 0
+        , arena = arena
         , movementPadOrigin = vec2 0 0
         , movementPadOffset = Nothing
         , movementPadHeldMs = 0
@@ -715,7 +723,7 @@ updatePlaying msg gameState =
                             if isNewServerState then
                                 { gameState
                                     | world =
-                                        initWorld
+                                        gameState.arena
                                             |> addBodies bodies
                                             |> simulatePhysics clientServerDiscrepancyMs
                                     , lastUpdated = lastUpdated
@@ -800,7 +808,9 @@ viewPad :
     -> Html Msg
 viewPad viewSize onDown onMove onUp attrs =
     Html.div
-        ([ Html.Attributes.style "touch-action" "manipulation"
+        ([ Html.Attributes.style "touch-action" "none"
+         , Html.Attributes.style "user-select" "none"
+         , Html.Attributes.style "-webkit-user-select" "none"
          , Html.Attributes.width (round viewSize)
          , Html.Attributes.style "height" "0"
          , Html.Attributes.style "padding-bottom" "50%"
@@ -966,7 +976,7 @@ viewPlaying world teams cameraXRotationAngle cameraZRotationAngle viewSize =
                                         in
                                         Scene3d.group
                                             [ Scene3d.cylinderWithShadow
-                                                (Scene3d.Material.matte color)
+                                                (Scene3d.Material.nonmetal { baseColor = color, roughness = 0.5 })
                                                 (Cylinder3d.centeredOn
                                                     Point3d.origin
                                                     Direction3d.z
