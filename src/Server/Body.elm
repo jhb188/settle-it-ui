@@ -146,7 +146,7 @@ getDefaultBody myId body =
                 (Cylinder3d.centeredOn
                     Point3d.origin
                     Direction3d.z
-                    { radius = Length.centimeters 20, length = Length.meter }
+                    { radius = Length.meters 0.525, length = Length.meter }
                 )
                 { mesh = WebGL.triangles []
                 , class =

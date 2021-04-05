@@ -27,6 +27,7 @@ import List
 import List.Extra
 import Mass
 import Math.Vector2 as Vec2 exposing (Vec2, vec2)
+import Mesh.Player
 import Physics.Body
 import Physics.Body.Extra exposing (getEyePoint)
 import Physics.Coordinates
@@ -911,18 +912,38 @@ viewPlaying world teams cameraXRotationAngle cameraZRotationAngle viewSize =
 
                                                     Nothing ->
                                                         Color.black
+
+                                            entity =
+                                                case Mesh.Player.maybeMesh of
+                                                    Just playerMesh ->
+                                                        Scene3d.group
+                                                            [ Scene3d.mesh
+                                                                (Scene3d.Material.metal { baseColor = color, roughness = 0.1 })
+                                                                playerMesh
+                                                            , Scene3d.cylinderWithShadow
+                                                                (Scene3d.Material.metal { baseColor = Color.rgba 0 0 0 0, roughness = 0.1 })
+                                                                (Cylinder3d.centeredOn
+                                                                    Point3d.origin
+                                                                    Direction3d.z
+                                                                    { radius = Length.meters 0.4
+                                                                    , length = Length.meters 1.8
+                                                                    }
+                                                                )
+                                                            ]
+
+                                                    Nothing ->
+                                                        Scene3d.cylinderWithShadow
+                                                            (Scene3d.Material.metal { baseColor = color, roughness = 0.1 })
+                                                            (Cylinder3d.centeredOn
+                                                                Point3d.origin
+                                                                Direction3d.z
+                                                                { radius = Length.meters 0.525
+                                                                , length = Length.meters 2.0
+                                                                }
+                                                            )
                                         in
                                         Scene3d.group
-                                            [ Scene3d.cylinderWithShadow
-                                                (Scene3d.Material.nonmetal { baseColor = color, roughness = 0.5 })
-                                                (Cylinder3d.centeredOn
-                                                    Point3d.origin
-                                                    Direction3d.z
-                                                    { radius = Length.meters 0.5
-                                                    , length = Length.meters 2.0
-                                                    }
-                                                )
-                                                |> Scene3d.placeIn bodyFrame
+                                            [ Scene3d.placeIn bodyFrame entity
                                             , viewHealthBar body (Viewpoint3d.xDirection viewpoint)
                                             ]
 
