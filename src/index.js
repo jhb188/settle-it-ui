@@ -20,33 +20,33 @@ let gameChannel;
 
 let playerId = localStorage.getItem(playerIdKey);
 
-const uuidv4 = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'
-  .replace(/[xy]/g, c => {
-    const r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+const uuidv4 = () =>
+  "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0,
+      v = c == "x" ? r : (r & 0x3) | 0x8;
     return v.toString(16);
-  }
-);
+  });
 
 const generateGameCode = () => {
   let result = "";
   const characters = "abcdefghijklmnopqrstuvwxyz";
   const charactersLength = characters.length;
-  for ( let i = 0; i < 4; i++ ) {
-     result += characters.charAt(Math.floor(Math.random() * charactersLength));
+  for (let i = 0; i < 4; i++) {
+    result += characters.charAt(Math.floor(Math.random() * charactersLength));
   }
   return result;
-}
+};
 
 if (!playerId) {
   playerId = uuidv4();
-  localStorage.setItem(playerIdKey, playerId)
+  localStorage.setItem(playerIdKey, playerId);
 }
 
 const app = Elm.Main.init({
   node: document.getElementById("root"),
   flags: {
     playerId: playerId,
-  }
+  },
 });
 
 const attachGameChannelListeners = (gc) => {
@@ -59,8 +59,10 @@ const attachGameChannelListeners = (gc) => {
   });
 };
 
-app.ports.joinGame.subscribe(({gameId, playerId, topic}) => {
-  const joinPayload = topic ? {player_id: playerId, topic: topic} : {player_id: playerId};
+app.ports.joinGame.subscribe(({ gameId, playerId, topic }) => {
+  const joinPayload = topic
+    ? { player_id: playerId, topic: topic }
+    : { player_id: playerId };
   const gameCode = (gameId || generateGameCode()).toLowerCase();
 
   gameChannel = socket.channel(`game:${gameCode}`, joinPayload);
@@ -72,38 +74,41 @@ app.ports.joinGame.subscribe(({gameId, playerId, topic}) => {
 
 app.ports.startGame.subscribe(() => {
   gameChannel.push("start_game", {});
-})
+});
 
-app.ports.createTeam.subscribe(({playerId, name}) => {
-  gameChannel.push("create_team", {player_id: playerId, name: name});
+app.ports.createTeam.subscribe(({ playerId, name }) => {
+  gameChannel.push("create_team", { player_id: playerId, name: name });
 });
 
 app.ports.deleteTeam.subscribe((teamId) => {
-  gameChannel.push("delete_team", {team_id: teamId});
+  gameChannel.push("delete_team", { team_id: teamId });
 });
 
-app.ports.joinTeam.subscribe(({playerId, teamId}) => {
-  gameChannel.push("player_join_team", {player_id: playerId, team_id: teamId});
+app.ports.joinTeam.subscribe(({ playerId, teamId }) => {
+  gameChannel.push("player_join_team", {
+    player_id: playerId,
+    team_id: teamId,
+  });
 });
 
-app.ports.updatePlayerName.subscribe(({playerId, name}) => {
-  gameChannel.push("player_update_name", {player_id: playerId, name: name});
+app.ports.updatePlayerName.subscribe(({ playerId, name }) => {
+  gameChannel.push("player_update_name", { player_id: playerId, name: name });
 });
 
 app.ports.requestJump.subscribe((playerId) => {
-  gameChannel.push("player_jump", {player_id: playerId});
+  gameChannel.push("player_jump", { player_id: playerId });
 });
 
-app.ports.requestMove.subscribe(({playerId, x, y}) => {
-  gameChannel.push("player_move", {player_id: playerId, x: x / 1, y: y / 1});
+app.ports.requestMove.subscribe(({ playerId, x, y }) => {
+  gameChannel.push("player_move", { player_id: playerId, x: x / 1, y: y / 1 });
 });
 
-app.ports.requestRotate.subscribe(({playerId, angle}) => {
-  gameChannel.push("player_rotate", {player_id: playerId, angle: angle});
+app.ports.requestRotate.subscribe(({ playerId, angle }) => {
+  gameChannel.push("player_rotate", { player_id: playerId, angle: angle });
 });
 
-app.ports.requestShoot.subscribe(({playerId, position, linvel}) => {
-  gameChannel.push("player_shoot", { player_id: playerId, position, linvel});
+app.ports.requestShoot.subscribe(({ playerId, position, linvel }) => {
+  gameChannel.push("player_shoot", { player_id: playerId, position, linvel });
 });
 
 window.onbeforeunload = () => {

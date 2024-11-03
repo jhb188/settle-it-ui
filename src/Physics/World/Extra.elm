@@ -1,4 +1,4 @@
-module Physics.World.Extra exposing (getLookAxis, getMe, updateMe)
+module Physics.World.Extra exposing (getLookAxis, getMe, getMeInBodies, updateMe)
 
 import Angle
 import Axis3d
@@ -47,9 +47,14 @@ hasClass class body =
     data.class == class
 
 
+getMeInBodies : List (Physics.Body.Body Data) -> Maybe (Physics.Body.Body Data)
+getMeInBodies =
+    List.Extra.find (hasClass Me)
+
+
 getMe : Physics.World.World Data -> Maybe (Physics.Body.Body Data)
 getMe =
-    Physics.World.bodies >> List.Extra.find (hasClass Me)
+    Physics.World.bodies >> getMeInBodies
 
 
 getLookAxis : Physics.World.World BodyData.Data -> Float -> Float -> Axis3d.Axis3d Length.Meters Physics.Coordinates.WorldCoordinates

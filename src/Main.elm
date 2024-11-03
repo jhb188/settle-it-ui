@@ -32,7 +32,7 @@ import Physics.Body
 import Physics.Body.Extra exposing (getEyePoint)
 import Physics.Coordinates
 import Physics.World
-import Physics.World.Extra exposing (getLookAxis, getMe, updateMe)
+import Physics.World.Extra exposing (getLookAxis, getMe, getMeInBodies, updateMe)
 import Pixels
 import Point3d
 import Quantity
@@ -663,11 +663,25 @@ updatePlaying msg gameState =
                                     (toFloat gameState.lastUpdated + gameState.msSinceLastServerUpdateApplied) - toFloat lastUpdated
                             in
                             if isNewServerState then
-                                { gameState
-                                    | world =
+                                let
+                                    defaultNextWorld =
                                         gameState.arena
                                             |> addBodies bodies
-                                            |> simulatePhysics clientServerDiscrepancyMs
+
+                                    nextWorld =
+                                        case ( getMe gameState.world, getMeInBodies bodies ) of
+                                            ( Just oldMe, Just newMe ) ->
+                                                let
+                                                    nextMe =
+                                                        Physics.Body.Extra.updateServerAuthoritativeData oldMe newMe
+                                                in
+                                                updateMe (always nextMe) defaultNextWorld
+
+                                            _ ->
+                                                defaultNextWorld
+                                in
+                                { gameState
+                                    | world = simulatePhysics clientServerDiscrepancyMs nextWorld
                                     , lastUpdated = lastUpdated
                                     , newBodiesUpdate = Nothing
                                     , msSinceLastServerUpdateApplied = 0
