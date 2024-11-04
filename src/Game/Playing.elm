@@ -295,7 +295,8 @@ amIAlive { world } =
 applyActions : Maybe (Physics.Body.Body BodyData.Data) -> Model -> Float -> ( Model, Cmd Msg )
 applyActions previousMe gameState ms =
     let
-        playerIsAlive = amIAlive gameState
+        playerIsAlive =
+            amIAlive gameState
 
         applyIf cond f gs =
             if cond then
