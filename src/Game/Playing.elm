@@ -282,16 +282,20 @@ initWorld =
             Direction3d.negativeZ
 
 
+amIAlive : Model -> Bool
+amIAlive { world } =
+    case getMe world of
+        Nothing ->
+            False
+
+        Just me ->
+            isAlive me
+
+
 applyActions : Maybe (Physics.Body.Body BodyData.Data) -> Model -> Float -> ( Model, Cmd Msg )
 applyActions previousMe gameState ms =
     let
-        playerIsAlive =
-            case getMe gameState.world of
-                Nothing ->
-                    False
-
-                Just me ->
-                    isAlive me
+        playerIsAlive = amIAlive gameState
 
         applyIf cond f gs =
             if cond then
@@ -322,6 +326,16 @@ applyJump gameState =
     )
 
 
+bulletMass : Mass.Mass
+bulletMass =
+    Mass.grams 50
+
+
+bulletImpulse : Quantity.Quantity Float (Quantity.Product Force.Newtons Duration.Seconds)
+bulletImpulse =
+    Force.newtons 200 |> Quantity.times (Duration.milliseconds 16.667)
+
+
 applyShoot : Model -> ( Model, Cmd Msg )
 applyShoot gameState =
     let
@@ -333,10 +347,10 @@ applyShoot gameState =
 
         projectile =
             Physics.Body.particle { class = Bullet, mesh = WebGL.triangles [], hp = 0 }
-                |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams 50))
+                |> Physics.Body.withBehavior (Physics.Body.dynamic bulletMass)
                 |> Physics.Body.moveTo projectileStartPoint
                 |> Physics.Body.applyImpulse
-                    (Force.newtons 200 |> Quantity.times (Duration.milliseconds 16.667))
+                    bulletImpulse
                     (Axis3d.direction projectileOrientation)
                     projectileStartPoint
     in
@@ -344,13 +358,17 @@ applyShoot gameState =
     , requestShoot
         { playerId = gameState.playerId
         , position = Point3d.toRecord Length.inMeters projectileStartPoint
-        , linvel =
-            projectile
-                |> Physics.Body.velocity
-                |> Vector3d.for (Duration.seconds 1)
-                |> Vector3d.toRecord Length.inMeters
+        , linvel = getLinvel projectile
         }
     )
+
+
+getLinvel : Physics.Body.Body data -> { x : Float, y : Float, z : Float }
+getLinvel body =
+    body
+        |> Physics.Body.velocity
+        |> Vector3d.for (Duration.seconds 1)
+        |> Vector3d.toRecord Length.inMeters
 
 
 isAlive : Physics.Body.Body Data -> Bool
@@ -373,11 +391,14 @@ updateMovement ms maybeMe gameState =
                 { x, y } =
                     Vec2.toRecord <| direction
 
+                speed =
+                    0.1
+
                 xMovement =
-                    x / 10
+                    x * speed
 
                 yMovement =
-                    y / 10
+                    y * speed
 
                 coordsAreInvalid =
                     isNaN x || isNaN y
