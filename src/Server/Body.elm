@@ -93,8 +93,11 @@ physicsBodiesDecoder myId =
 toPhysicsBody : String -> Body -> Physics.Body.Body BodyData.Data
 toPhysicsBody myId body =
     let
+        isMe =
+            body.id == myId
+
         unrotatedPhysicsBody =
-            getDefaultBody myId body
+            getDefaultBody isMe body
                 |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams body.mass))
                 |> Physics.Body.translateBy (Vector3d.meters body.translation.x body.translation.y body.translation.z)
 
@@ -138,8 +141,8 @@ toPhysicsBody myId body =
             nextPhysicsBody
 
 
-getDefaultBody : String -> Body -> Physics.Body.Body BodyData.Data
-getDefaultBody myId body =
+getDefaultBody : Bool -> Body -> Physics.Body.Body BodyData.Data
+getDefaultBody isMe body =
     case body.class of
         NPC ->
             Physics.Body.cylinder
@@ -150,11 +153,11 @@ getDefaultBody myId body =
                 )
                 { mesh = WebGL.triangles []
                 , class =
-                    if body.id == myId then
+                    if isMe then
                         Me
 
                     else
-                        body.class
+                        NPC
                 , hp = body.hp
                 , id = body.id
                 , teamId = body.teamId
