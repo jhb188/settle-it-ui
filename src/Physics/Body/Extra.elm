@@ -1,17 +1,18 @@
-module Physics.Body.Extra exposing (getEyePoint, updateServerAuthoritativeData)
+module Physics.Body.Extra exposing
+    ( toSceneEntity
+    , updateServerAuthoritativeData
+    )
 
-import BodyData exposing (Data)
+import BodyData exposing (Class(..), Data, Dimensions(..))
+import Common exposing (StandardUnits)
 import Length
 import Physics.Body
 import Physics.Coordinates
 import Point3d
-import Vector3d
-
-
-getEyePoint : Physics.Body.Body Data -> Point3d.Point3d Length.Meters Physics.Coordinates.WorldCoordinates
-getEyePoint me =
-    Physics.Body.originPoint me
-        |> Point3d.translateBy (Vector3d.meters 0 0 0.5)
+import Scene3d
+import Scene3d.Entity.Extra
+import Server.Team
+import Viewpoint3d
 
 
 updateServerAuthoritativeData :
@@ -31,3 +32,27 @@ updateServerAuthoritativeData oldBody newBody =
     in
     newBody
         |> Physics.Body.moveTo updatedOrigin
+
+
+toSceneEntity :
+    List Server.Team.Team
+    -> Viewpoint3d.Viewpoint3d StandardUnits Physics.Coordinates.WorldCoordinates
+    -> Physics.Body.Body Data
+    -> Maybe (Scene3d.Entity Physics.Coordinates.WorldCoordinates)
+toSceneEntity teams viewpoint body =
+    let
+        bodyData =
+            Physics.Body.data body
+    in
+    case bodyData.class of
+        Bullet ->
+            Just <| Scene3d.Entity.Extra.bullet body
+
+        Obstacle ->
+            Just <| Scene3d.Entity.Extra.obstacle body
+
+        NPC ->
+            Just <| Scene3d.Entity.Extra.npc teams viewpoint body
+
+        _ ->
+            Nothing

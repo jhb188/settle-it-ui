@@ -3,14 +3,11 @@ port module Game.Playing exposing (..)
 import Acceleration
 import Angle
 import Axis3d
-import Block3d
 import BodyData exposing (Class(..), Data, Dimensions(..))
 import Browser.Dom
 import Camera3d
-import Color
 import Common exposing (..)
 import Config
-import Cylinder3d
 import Direction3d
 import Duration
 import Force
@@ -21,27 +18,20 @@ import Html.Events.Extra.Pointer as Pointer
 import Json.Decode
 import Json.Encode
 import Length
-import List.Extra
 import Mass
 import Math.Vector2 as Vec2 exposing (Vec2, vec2)
-import Mesh.Player
+import Me
 import Physics.Body
-import Physics.Body.Extra exposing (getEyePoint)
-import Physics.Coordinates
+import Physics.Body.Extra
 import Physics.World
-import Physics.World.Extra exposing (getLookAxis, getMe, getMeInBodies, updateMe)
 import Pixels
 import Point3d
 import Quantity
 import Scene3d
-import Scene3d.Material
-import Scene3d.Mesh
 import Server.State
 import Server.Team
-import Sphere3d
 import Task
 import Vector3d
-import Viewpoint3d
 import WebGL
 
 
@@ -92,7 +82,7 @@ init playerId { bodies, lastUpdated, teams } =
             addBodies bodies initWorld
 
         initialCameraZRotationAngle =
-            case getMe world of
+            case Me.getInWorld world of
                 Just me ->
                     let
                         myLookDirection =
@@ -155,13 +145,13 @@ update msg gameState =
                                             |> addBodies bodies
 
                                     nextWorld =
-                                        case ( getMe gameState.world, getMeInBodies bodies ) of
+                                        case ( Me.getInWorld gameState.world, Me.getInBodies bodies ) of
                                             ( Just oldMe, Just newMe ) ->
                                                 let
                                                     nextMe =
                                                         Physics.Body.Extra.updateServerAuthoritativeData oldMe newMe
                                                 in
-                                                updateMe (always nextMe) defaultNextWorld
+                                                Me.updateInWorld (always nextMe) defaultNextWorld
 
                                             _ ->
                                                 defaultNextWorld
@@ -180,7 +170,7 @@ update msg gameState =
                             getNextSimulatedPlayingState ms gameState
 
                 ( nextModelActionsApplied, cmd ) =
-                    applyActions (getMe gameState.world) nextModel ms
+                    applyActions (Me.getInWorld gameState.world) nextModel ms
             in
             ( nextModelActionsApplied, cmd )
 
@@ -284,7 +274,7 @@ initWorld =
 
 amIAlive : Model -> Bool
 amIAlive { world } =
-    case getMe world of
+    case Me.getInWorld world of
         Nothing ->
             False
 
@@ -341,7 +331,7 @@ applyShoot : Model -> ( Model, Cmd Msg )
 applyShoot gameState =
     let
         projectileOrientation =
-            getLookAxis gameState.world gameState.cameraXRotationAngle gameState.cameraZRotationAngle
+            Me.getLookAxis gameState.world gameState.cameraXRotationAngle gameState.cameraZRotationAngle
 
         projectileStartPoint =
             Point3d.along projectileOrientation (Length.centimeters 30)
@@ -412,7 +402,7 @@ updateMovement ms maybeMe gameState =
                                     Physics.Body.frame me
 
                                 maybeNextZ =
-                                    getMe gameState.world |> Maybe.map (Physics.Body.originPoint >> Point3d.zCoordinate >> Length.inMeters)
+                                    Me.getInWorld gameState.world |> Maybe.map (Physics.Body.originPoint >> Point3d.zCoordinate >> Length.inMeters)
 
                                 nextOrigin =
                                     myFrame
@@ -436,7 +426,7 @@ updateMovement ms maybeMe gameState =
                                     Frame3d.placeIn Frame3d.atOrigin bodyFrameMoved |> Frame3d.originPoint
 
                                 nextWorld =
-                                    updateMe (Physics.Body.moveTo nextOriginPoint) gameState.world
+                                    Me.updateInWorld (Physics.Body.moveTo nextOriginPoint) gameState.world
                             in
                             ( { gameState
                                 | world = nextWorld
@@ -519,30 +509,10 @@ view :
 view world teams cameraXRotationAngle cameraZRotationAngle viewSize =
     let
         viewpoint =
-            case getMe world of
-                Just me ->
-                    let
-                        eyePoint =
-                            getEyePoint me
-
-                        cameraAxis =
-                            getLookAxis world cameraXRotationAngle cameraZRotationAngle
-
-                        focalPoint =
-                            Point3d.along cameraAxis (Length.meters 1)
-                    in
-                    Viewpoint3d.lookAt
-                        { eyePoint = eyePoint
-                        , focalPoint = focalPoint
-                        , upDirection = Direction3d.positiveZ
-                        }
-
-                Nothing ->
-                    Viewpoint3d.lookAt
-                        { eyePoint = Point3d.origin
-                        , focalPoint = Point3d.origin
-                        , upDirection = Direction3d.positiveZ
-                        }
+            Me.getViewpoint
+                world
+                cameraXRotationAngle
+                cameraZRotationAngle
 
         camera =
             Camera3d.perspective { viewpoint = viewpoint, verticalFieldOfView = fovAngle }
@@ -550,120 +520,7 @@ view world teams cameraXRotationAngle cameraZRotationAngle viewSize =
         entities =
             world
                 |> Physics.World.bodies
-                |> List.filterMap
-                    (\body ->
-                        let
-                            bodyFrame =
-                                Physics.Body.frame body
-
-                            bodyData =
-                                Physics.Body.data body
-                        in
-                        case bodyData.class of
-                            Bullet ->
-                                Just <|
-                                    (Scene3d.sphere
-                                        (Scene3d.Material.matte Color.blue)
-                                        (Sphere3d.atOrigin (Length.centimeters 5))
-                                        |> Scene3d.placeIn bodyFrame
-                                    )
-
-                            Obstacle ->
-                                Just <|
-                                    (Scene3d.blockWithShadow
-                                        (Scene3d.Material.nonmetal
-                                            { baseColor =
-                                                case bodyData.id of
-                                                    "floor" ->
-                                                        Color.lightBrown
-
-                                                    _ ->
-                                                        Color.lightCharcoal
-                                            , roughness = 0.5
-                                            }
-                                        )
-                                        (Block3d.centeredOn Frame3d.atOrigin
-                                            (case bodyData.dimensions of
-                                                Block x y z ->
-                                                    ( Length.meters x, Length.meters y, Length.meters z )
-
-                                                None ->
-                                                    ( Length.meters 1, Length.meters 1, Length.meters 1 )
-                                            )
-                                        )
-                                        |> Scene3d.placeIn bodyFrame
-                                    )
-
-                            NPC ->
-                                Just <|
-                                    if bodyData.hp == 0 then
-                                        Scene3d.blockWithShadow
-                                            (Scene3d.Material.matte Color.lightGray)
-                                            (Block3d.centeredOn
-                                                Frame3d.atOrigin
-                                                ( Length.meters 1.25, Length.meters 0.5, Length.meters 2.0 )
-                                            )
-                                            |> Scene3d.placeIn bodyFrame
-
-                                    else
-                                        let
-                                            color =
-                                                case List.Extra.find (\team -> bodyData.teamId == Just team.id) teams of
-                                                    Just team ->
-                                                        team.color
-
-                                                    Nothing ->
-                                                        Color.black
-
-                                            entity =
-                                                case Mesh.Player.maybeMesh of
-                                                    Just playerMesh ->
-                                                        Scene3d.group
-                                                            [ Scene3d.mesh
-                                                                (Scene3d.Material.metal { baseColor = color, roughness = 0.1 })
-                                                                playerMesh
-                                                            , Scene3d.cylinderWithShadow
-                                                                (Scene3d.Material.metal { baseColor = Color.rgba 0 0 0 0, roughness = 0.1 })
-                                                                (Cylinder3d.centeredOn
-                                                                    Point3d.origin
-                                                                    Direction3d.z
-                                                                    { radius = Length.meters 0.4
-                                                                    , length = Length.meters 1.8
-                                                                    }
-                                                                )
-                                                            ]
-
-                                                    Nothing ->
-                                                        Scene3d.cylinderWithShadow
-                                                            (Scene3d.Material.metal { baseColor = color, roughness = 0.1 })
-                                                            (Cylinder3d.centeredOn
-                                                                Point3d.origin
-                                                                Direction3d.z
-                                                                { radius = Length.meters 0.525
-                                                                , length = Length.meters 2.0
-                                                                }
-                                                            )
-                                        in
-                                        Scene3d.group
-                                            [ Scene3d.placeIn bodyFrame entity
-                                            , viewHealthBar body (Viewpoint3d.xDirection viewpoint)
-                                            ]
-
-                            Test ->
-                                Just <|
-                                    (Scene3d.sphereWithShadow
-                                        (Scene3d.Material.nonmetal
-                                            { baseColor = Color.red
-                                            , roughness = 0.4
-                                            }
-                                        )
-                                        (Sphere3d.atOrigin (Length.meters 0.5))
-                                        |> Scene3d.placeIn bodyFrame
-                                    )
-
-                            _ ->
-                                Nothing
-                    )
+                |> List.filterMap (Physics.Body.Extra.toSceneEntity teams viewpoint)
     in
     Html.div
         [ Html.Attributes.style "height" "100%"
@@ -762,44 +619,6 @@ viewPad viewSize onDown onMove onUp attrs =
 tupleToVec2 : ( Float, Float ) -> Vec2
 tupleToVec2 ( x, y ) =
     vec2 x (negate y)
-
-
-viewHealthBar :
-    Physics.Body.Body BodyData.Data
-    -> Direction3d.Direction3d Physics.Coordinates.WorldCoordinates
-    -> Scene3d.Entity Physics.Coordinates.WorldCoordinates
-viewHealthBar body viewPointXDirection =
-    let
-        hp =
-            (Physics.Body.data >> .hp) body
-
-        hpBarLength =
-            2.0
-
-        healthBarCenter =
-            Point3d.translateIn Direction3d.z (Length.meters 1) <| getEyePoint body
-
-        healthBarOrigin =
-            Point3d.translateIn (Direction3d.reverse viewPointXDirection) (Length.meters (hpBarLength / 2.0)) healthBarCenter
-
-        healthBarAxis =
-            Axis3d.through healthBarOrigin viewPointXDirection
-
-        getPoint forHp =
-            Point3d.along healthBarAxis (Length.meters (toFloat forHp * hpBarLength / 10.0))
-
-        points remaining =
-            case remaining of
-                0 ->
-                    []
-
-                someHp ->
-                    getPoint someHp :: points (remaining - 1)
-
-        mesh =
-            Scene3d.Mesh.points { radius = Pixels.float 2 } (points hp)
-    in
-    Scene3d.mesh (Scene3d.Material.color Color.lightGreen) mesh
 
 
 port requestJump : String -> Cmd msg

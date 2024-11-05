@@ -18,10 +18,9 @@ type Dimensions
 type Class
     = Me
     | NPC
-    | Wall
-    | Test
     | Bullet
     | Obstacle
+    | Test
 
 
 type alias Data =
