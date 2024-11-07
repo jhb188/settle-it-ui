@@ -148,13 +148,9 @@ update msg gameState =
                                             |> addBodies bodies
 
                                     nextWorld =
-                                        case ( Me.getInWorld gameState.world, Me.getInBodies bodies ) of
-                                            ( Just oldMe, Just newMe ) ->
-                                                let
-                                                    nextMe =
-                                                        Physics.Body.Extra.updateServerAuthoritativeData oldMe newMe
-                                                in
-                                                Me.updateInWorld (always nextMe) defaultNextWorld
+                                        case Me.getInBodies bodies of
+                                            Just newMe ->
+                                                Me.updateInWorld (always newMe) defaultNextWorld
 
                                             _ ->
                                                 defaultNextWorld

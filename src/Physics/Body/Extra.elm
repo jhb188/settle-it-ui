@@ -1,38 +1,14 @@
-module Physics.Body.Extra exposing
-    ( toSceneEntity
-    , updateServerAuthoritativeData
-    )
+module Physics.Body.Extra exposing (toSceneEntity)
 
 import BodyData exposing (Class(..), Data, Dimensions(..))
 import Common exposing (StandardUnits)
-import Length
 import Physics.Body
 import Physics.Coordinates
-import Point3d
 import Scene3d
 import Scene3d.Entity.Extra
 import Server.Team
 import Texture
 import Viewpoint3d
-
-
-updateServerAuthoritativeData :
-    Physics.Body.Body BodyData.Data
-    -> Physics.Body.Body BodyData.Data
-    -> Physics.Body.Body BodyData.Data
-updateServerAuthoritativeData oldBody newBody =
-    let
-        { x, y, z } =
-            newBody |> Physics.Body.originPoint |> Point3d.toRecord Length.inMeters
-
-        oldOrigin =
-            oldBody |> Physics.Body.originPoint |> Point3d.toRecord Length.inMeters
-
-        updatedOrigin =
-            Point3d.fromRecord Length.meters { x = oldOrigin.x, y = oldOrigin.y, z = z }
-    in
-    newBody
-        |> Physics.Body.moveTo updatedOrigin
 
 
 toSceneEntity :

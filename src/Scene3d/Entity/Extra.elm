@@ -1,6 +1,5 @@
 module Scene3d.Entity.Extra exposing (..)
 
-import Angle
 import Axis3d
 import Block3d
 import BodyData exposing (Dimensions(..))
@@ -47,6 +46,7 @@ arenaWidth =
     200
 
 
+getTiledFloor : Scene3d.Material.Textured Physics.Coordinates.BodyCoordinates -> Scene3d.Entity Physics.Coordinates.WorldCoordinates
 getTiledFloor texture =
     let
         tileSize =
@@ -137,11 +137,7 @@ obstacle body =
     in
     Scene3d.placeIn bodyFrame <|
         Scene3d.blockWithShadow
-            (Scene3d.Material.nonmetal
-                { baseColor = Color.grey
-                , roughness = 0.5
-                }
-            )
+            (Scene3d.Material.matte Color.grey)
             (Block3d.centeredOn Frame3d.atOrigin
                 (case bodyData.dimensions of
                     Block x y z ->
@@ -190,10 +186,9 @@ npc teams viewpoint body =
                     Just playerMesh ->
                         Scene3d.group
                             [ Scene3d.mesh
-                                (Scene3d.Material.metal { baseColor = color, roughness = 0.1 })
+                                (Scene3d.Material.metal { baseColor = color, roughness = 0.5 })
                                 playerMesh
-                            , Scene3d.cylinderWithShadow
-                                (Scene3d.Material.metal { baseColor = Color.rgba 0 0 0 0, roughness = 0.1 })
+                            , Scene3d.cylinderShadow
                                 (Cylinder3d.centeredOn
                                     Point3d.origin
                                     Direction3d.z
