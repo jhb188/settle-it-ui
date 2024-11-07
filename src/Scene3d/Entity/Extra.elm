@@ -1,5 +1,6 @@
 module Scene3d.Entity.Extra exposing (..)
 
+import Angle
 import Axis3d
 import Block3d
 import BodyData exposing (Dimensions(..))
@@ -21,6 +22,7 @@ import Scene3d.Material
 import Scene3d.Mesh
 import Server.Team
 import Sphere3d
+import Texture
 import Viewpoint3d
 
 
@@ -40,6 +42,90 @@ bullet body =
             (Sphere3d.atOrigin (Length.centimeters 5))
 
 
+arenaWidth : Float
+arenaWidth =
+    200
+
+
+getTiledFloor texture =
+    let
+        tileSize =
+            10
+
+        numTiles =
+            round arenaWidth // tileSize
+
+        entities =
+            List.concatMap (\x -> List.map (getFloorTile texture tileSize x) (List.range 0 (numTiles - 1))) (List.range 0 (numTiles - 1))
+    in
+    Scene3d.group
+        entities
+
+
+floorHeight : Float
+floorHeight =
+    1.0
+
+
+getFloorTile :
+    Scene3d.Material.Textured Physics.Coordinates.BodyCoordinates
+    -> Int
+    -> Int
+    -> Int
+    -> Scene3d.Entity Physics.Coordinates.WorldCoordinates
+getFloorTile texture intSize x y =
+    let
+        zPos =
+            floorHeight / 2
+
+        size =
+            toFloat intSize
+
+        offset =
+            size / 2
+
+        frontLeft =
+            Point3d.meters 0 0 zPos
+
+        frontRight =
+            Point3d.meters size 0 zPos
+
+        backLeft =
+            Point3d.meters 0 size zPos
+
+        backRight =
+            Point3d.meters size size zPos
+
+        baseline =
+            -arenaWidth / 2
+
+        position =
+            Point3d.origin
+                |> Point3d.translateIn Direction3d.x (Length.meters (toFloat x * size + baseline + offset))
+                |> Point3d.translateIn Direction3d.y (Length.meters (toFloat y * size + baseline + offset))
+
+        tileFrame =
+            Frame3d.atPoint position
+    in
+    Scene3d.quad
+        texture
+        frontRight
+        frontLeft
+        backLeft
+        backRight
+        |> Scene3d.placeIn tileFrame
+
+
+floor : Maybe Texture.Textures -> Body -> Entity
+floor textures body =
+    case textures of
+        Just { ground } ->
+            getTiledFloor ground
+
+        Nothing ->
+            obstacle body
+
+
 obstacle : Body -> Entity
 obstacle body =
     let
@@ -52,13 +138,7 @@ obstacle body =
     Scene3d.placeIn bodyFrame <|
         Scene3d.blockWithShadow
             (Scene3d.Material.nonmetal
-                { baseColor =
-                    case bodyData.id of
-                        "floor" ->
-                            Color.lightBrown
-
-                        _ ->
-                            Color.lightCharcoal
+                { baseColor = Color.grey
                 , roughness = 0.5
                 }
             )

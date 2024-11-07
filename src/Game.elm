@@ -76,8 +76,9 @@ view game =
 
         Playing playingState ->
             Html.map PlayingMsg <|
-                Html.Lazy.lazy5 Playing.view
+                Html.Lazy.lazy6 Playing.view
                     playingState.world
+                    playingState.textures
                     playingState.teams
                     playingState.cameraXRotationAngle
                     playingState.cameraZRotationAngle

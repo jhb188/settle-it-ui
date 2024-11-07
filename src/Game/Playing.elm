@@ -6,6 +6,7 @@ import Axis3d
 import BodyData exposing (Class(..), Data, Dimensions(..))
 import Browser.Dom
 import Camera3d
+import Color
 import Common exposing (..)
 import Config
 import Direction3d
@@ -31,8 +32,10 @@ import Scene3d
 import Server.State
 import Server.Team
 import Task
+import Texture
 import Vector3d
 import WebGL
+import WebGL.Texture
 
 
 type alias Model =
@@ -54,6 +57,7 @@ type alias Model =
     , shouldJumpNextFrame : Bool
     , shouldShootNextFrame : Bool
     , teams : List Server.Team.Team
+    , textures : Maybe Texture.Textures
     }
 
 
@@ -67,6 +71,7 @@ type Msg
     | TargetPadMoved Vec2
     | TargetPadUp
     | BodiesUpdated Json.Encode.Value
+    | TexturesLoaded (Result WebGL.Texture.Error Texture.Textures)
 
 
 init : PlayerId -> Server.State.State -> ( Model, Cmd Msg )
@@ -118,6 +123,7 @@ init playerId { bodies, lastUpdated, teams } =
       , shouldJumpNextFrame = False
       , shouldShootNextFrame = False
       , teams = teams
+      , textures = Nothing
       }
     , Task.perform ViewportChanged Browser.Dom.getViewport
     )
@@ -134,9 +140,6 @@ update msg gameState =
                             let
                                 isNewServerState =
                                     lastUpdated > gameState.lastUpdated
-
-                                clientServerDiscrepancyMs =
-                                    (toFloat gameState.lastUpdated + gameState.msSinceLastServerUpdateApplied) - toFloat lastUpdated
                             in
                             if isNewServerState then
                                 let
@@ -155,6 +158,9 @@ update msg gameState =
 
                                             _ ->
                                                 defaultNextWorld
+
+                                    clientServerDiscrepancyMs =
+                                        (toFloat gameState.lastUpdated + gameState.msSinceLastServerUpdateApplied + ms) - toFloat lastUpdated
                                 in
                                 { gameState
                                     | world = simulatePhysics clientServerDiscrepancyMs nextWorld
@@ -185,7 +191,7 @@ update msg gameState =
                 shortDimension =
                     min width height
             in
-            ( { gameState | viewSize = shortDimension - 20.0 }, Cmd.none )
+            ( { gameState | viewSize = shortDimension - 20.0 }, Task.attempt TexturesLoaded Texture.init )
 
         MovementPadDown newOrigin ->
             ( { gameState | movementPadOrigin = newOrigin, movementPadOffset = Just newOrigin }, Cmd.none )
@@ -227,6 +233,14 @@ update msg gameState =
             else
                 ( nextModel, Cmd.none )
 
+        TexturesLoaded result ->
+            case result of
+                Ok textures ->
+                    ( { gameState | textures = Just textures }, Cmd.none )
+
+                Err _ ->
+                    ( gameState, Cmd.none )
+
 
 jumpThresholdMs : Float
 jumpThresholdMs =
@@ -257,7 +271,7 @@ addBodies bodies world =
 
 simulatePhysics : Float -> Physics.World.World Data -> Physics.World.World Data
 simulatePhysics ms world =
-    if Config.useClientPhysics then
+    if Config.useClientPhysics && ms > 0 then
         Physics.World.simulate (Duration.milliseconds ms) world
 
     else
@@ -501,12 +515,13 @@ fovAngle =
 
 view :
     Physics.World.World BodyData.Data
+    -> Maybe Texture.Textures
     -> List Server.Team.Team
     -> Float
     -> Float
     -> Float
     -> Html Msg
-view world teams cameraXRotationAngle cameraZRotationAngle viewSize =
+view world textures teams cameraXRotationAngle cameraZRotationAngle viewSize =
     let
         viewpoint =
             Me.getViewpoint
@@ -520,7 +535,7 @@ view world teams cameraXRotationAngle cameraZRotationAngle viewSize =
         entities =
             world
                 |> Physics.World.bodies
-                |> List.filterMap (Physics.Body.Extra.toSceneEntity teams viewpoint)
+                |> List.filterMap (Physics.Body.Extra.toSceneEntity textures teams viewpoint)
     in
     Html.div
         [ Html.Attributes.style "height" "100%"
@@ -543,7 +558,7 @@ view world teams cameraXRotationAngle cameraZRotationAngle viewSize =
                 , dimensions = ( Pixels.int <| round viewSize, Pixels.int <| round viewSize )
                 , camera = camera
                 , clipDepth = Length.meters 0.5
-                , background = Scene3d.transparentBackground
+                , background = Scene3d.backgroundColor Color.lightBlue
                 , entities = entities
                 }
             , Html.div
