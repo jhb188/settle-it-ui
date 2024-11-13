@@ -1,7 +1,4 @@
-module Physics.Body.Extra exposing
-    ( toSceneEntity
-    , updateServerAuthoritativeData
-    )
+module Physics.Body.Extra exposing (toSceneEntity, updateServerAuthoritativeData)
 
 import BodyData exposing (Class(..), Data, Dimensions(..))
 import Common exposing (StandardUnits)
@@ -12,6 +9,7 @@ import Point3d
 import Scene3d
 import Scene3d.Entity.Extra
 import Server.Team
+import Texture
 import Viewpoint3d
 
 
@@ -21,7 +19,7 @@ updateServerAuthoritativeData :
     -> Physics.Body.Body BodyData.Data
 updateServerAuthoritativeData oldBody newBody =
     let
-        { x, y, z } =
+        { z } =
             newBody |> Physics.Body.originPoint |> Point3d.toRecord Length.inMeters
 
         oldOrigin =
@@ -35,11 +33,12 @@ updateServerAuthoritativeData oldBody newBody =
 
 
 toSceneEntity :
-    List Server.Team.Team
+    Maybe Texture.Textures
+    -> List Server.Team.Team
     -> Viewpoint3d.Viewpoint3d StandardUnits Physics.Coordinates.WorldCoordinates
     -> Physics.Body.Body Data
     -> Maybe (Scene3d.Entity Physics.Coordinates.WorldCoordinates)
-toSceneEntity teams viewpoint body =
+toSceneEntity textures teams viewpoint body =
     let
         bodyData =
             Physics.Body.data body
@@ -49,7 +48,16 @@ toSceneEntity teams viewpoint body =
             Just <| Scene3d.Entity.Extra.bullet body
 
         Obstacle ->
-            Just <| Scene3d.Entity.Extra.obstacle body
+            let
+                entity =
+                    case bodyData.id of
+                        "floor" ->
+                            Scene3d.Entity.Extra.floor textures body
+
+                        _ ->
+                            Scene3d.Entity.Extra.obstacle body
+            in
+            Just entity
 
         NPC ->
             Just <| Scene3d.Entity.Extra.npc teams viewpoint body

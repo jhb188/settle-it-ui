@@ -21,6 +21,7 @@ import Scene3d.Material
 import Scene3d.Mesh
 import Server.Team
 import Sphere3d
+import Texture
 import Viewpoint3d
 
 
@@ -40,6 +41,91 @@ bullet body =
             (Sphere3d.atOrigin (Length.centimeters 5))
 
 
+arenaWidth : Float
+arenaWidth =
+    200
+
+
+getTiledFloor : Scene3d.Material.Textured Physics.Coordinates.BodyCoordinates -> Scene3d.Entity Physics.Coordinates.WorldCoordinates
+getTiledFloor texture =
+    let
+        tileSize =
+            5
+
+        numTiles =
+            round arenaWidth // tileSize
+
+        entities =
+            List.concatMap (\x -> List.map (getFloorTile texture tileSize x) (List.range 0 (numTiles - 1))) (List.range 0 (numTiles - 1))
+    in
+    Scene3d.group
+        entities
+
+
+floorHeight : Float
+floorHeight =
+    1.0
+
+
+getFloorTile :
+    Scene3d.Material.Textured Physics.Coordinates.BodyCoordinates
+    -> Int
+    -> Int
+    -> Int
+    -> Scene3d.Entity Physics.Coordinates.WorldCoordinates
+getFloorTile texture intSize x y =
+    let
+        zPos =
+            floorHeight / 2
+
+        size =
+            toFloat intSize
+
+        offset =
+            size / 2
+
+        frontLeft =
+            Point3d.meters 0 0 zPos
+
+        frontRight =
+            Point3d.meters size 0 zPos
+
+        backLeft =
+            Point3d.meters 0 size zPos
+
+        backRight =
+            Point3d.meters size size zPos
+
+        baseline =
+            -arenaWidth / 2
+
+        position =
+            Point3d.origin
+                |> Point3d.translateIn Direction3d.x (Length.meters (toFloat x * size + baseline + offset))
+                |> Point3d.translateIn Direction3d.y (Length.meters (toFloat y * size + baseline + offset))
+
+        tileFrame =
+            Frame3d.atPoint position
+    in
+    Scene3d.quad
+        texture
+        frontRight
+        frontLeft
+        backLeft
+        backRight
+        |> Scene3d.placeIn tileFrame
+
+
+floor : Maybe Texture.Textures -> Body -> Entity
+floor textures body =
+    case textures of
+        Just { ground } ->
+            getTiledFloor ground
+
+        Nothing ->
+            obstacle body
+
+
 obstacle : Body -> Entity
 obstacle body =
     let
@@ -51,17 +137,7 @@ obstacle body =
     in
     Scene3d.placeIn bodyFrame <|
         Scene3d.blockWithShadow
-            (Scene3d.Material.nonmetal
-                { baseColor =
-                    case bodyData.id of
-                        "floor" ->
-                            Color.lightBrown
-
-                        _ ->
-                            Color.lightCharcoal
-                , roughness = 0.5
-                }
-            )
+            (Scene3d.Material.matte Color.grey)
             (Block3d.centeredOn Frame3d.atOrigin
                 (case bodyData.dimensions of
                     Block x y z ->
@@ -110,10 +186,9 @@ npc teams viewpoint body =
                     Just playerMesh ->
                         Scene3d.group
                             [ Scene3d.mesh
-                                (Scene3d.Material.metal { baseColor = color, roughness = 0.1 })
+                                (Scene3d.Material.metal { baseColor = color, roughness = 0.5 })
                                 playerMesh
-                            , Scene3d.cylinderWithShadow
-                                (Scene3d.Material.metal { baseColor = Color.rgba 0 0 0 0, roughness = 0.1 })
+                            , Scene3d.cylinderShadow
                                 (Cylinder3d.centeredOn
                                     Point3d.origin
                                     Direction3d.z

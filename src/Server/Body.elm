@@ -98,7 +98,6 @@ toPhysicsBody myId body =
 
         unrotatedPhysicsBody =
             getDefaultBody isMe body
-                |> Physics.Body.withBehavior (Physics.Body.dynamic (Mass.grams body.mass))
                 |> Physics.Body.translateBy (Vector3d.meters body.translation.x body.translation.y body.translation.z)
 
         frame =
@@ -130,9 +129,6 @@ toPhysicsBody myId body =
 
                 impulse =
                     Force.newtons (body.mass * velocity / impulseDurationSeconds)
-                        -- hacky normalize for now because some linear velocity unit is in disagreement between
-                        -- client and server
-                        |> Quantity.divideBy 1000
                         |> Quantity.times (Duration.seconds impulseDurationSeconds)
 
                 nextPhysicsBody =
@@ -182,7 +178,6 @@ getDefaultBody isMe body =
                     ( Length.meters x, Length.meters y, Length.meters z )
                 )
                 { mesh = WebGL.triangles [], class = BodyData.Obstacle, hp = 0, id = body.id, teamId = Nothing, dimensions = Block x y z }
-                |> Physics.Body.withBehavior Physics.Body.static
 
         _ ->
             Physics.Body.sphere
