@@ -24,7 +24,7 @@ update : Msg -> Model -> ( Model, Cmd Msg )
 update msg preLobbyState =
     case msg of
         GameCodeInputUpdated newGameCode ->
-            ( { preLobbyState | gameCode = newGameCode }, Cmd.none )
+            ( { preLobbyState | gameCode = String.toLower newGameCode }, Cmd.none )
 
         TopicUpdated newTopicName ->
             ( { preLobbyState | topic = newTopicName }, Cmd.none )
@@ -43,17 +43,13 @@ view preLobbyState =
         , Html.Attributes.style "flex-direction" "column"
         , Html.Attributes.style "align-items" "center"
         , Html.Attributes.style "justify-content" "space-around"
-        , Html.Attributes.style "height" "75%"
+        , Html.Attributes.style "height" "90%"
         , Html.Attributes.style "display" "flex"
         ]
         [ Html.div
-            [ Html.Attributes.style "display" "flex"
-            , Html.Attributes.style "flex" "1"
-            , Html.Attributes.style "flex-direction" "column"
-            , Html.Attributes.style "align-items" "center"
-            , Html.Attributes.style "justify-content" "center"
+            [ Html.Attributes.class "flex-column-item"
             ]
-            [ Html.div [] [ Html.text "Join a debate topic" ]
+            [ Html.h2 [] [ Html.text "Join a debate topic" ]
             , Html.div []
                 [ Html.input
                     [ Html.Events.onInput GameCodeInputUpdated
@@ -69,22 +65,15 @@ view preLobbyState =
                 ]
             ]
         , Html.div
-            [ Html.Attributes.style "display" "flex"
-            , Html.Attributes.style "flex" "1"
-            , Html.Attributes.style "flex-direction" "column"
-            , Html.Attributes.style "align-items" "center"
-            , Html.Attributes.style "justify-content" "center"
+            [ Html.Attributes.class "flex-column-item"
             ]
-            [ Html.div [] [ Html.text "OR" ]
+            [ Html.h1 [] [ Html.text "OR" ]
             ]
         , Html.div
-            [ Html.Attributes.style "display" "flex"
-            , Html.Attributes.style "flex" "1"
-            , Html.Attributes.style "flex-direction" "column"
-            , Html.Attributes.style "align-items" "center"
-            , Html.Attributes.style "justify-content" "center"
+            [ Html.Attributes.class "flex-column-item"
             ]
-            [ Html.div [] [ Html.text "Start a new debate topic (like \"Where should we eat tonight?\")" ]
+            [ Html.h2 [] [ Html.text "Start a new debate topic" ]
+            , Html.div [ Html.Attributes.style "padding" "10px" ] [ Html.text "(like \"Where should we eat tonight?\")" ]
             , Html.div []
                 [ Html.textarea
                     [ Html.Events.onInput TopicUpdated

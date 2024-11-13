@@ -1,4 +1,4 @@
-module Physics.World.Extra exposing (updateClass)
+module Physics.World.Extra exposing (addBodies, updateClass)
 
 import BodyData exposing (Class(..), Data)
 import Physics.Body
@@ -24,3 +24,11 @@ updateClass class transformer world =
                 body
     in
     Physics.World.update f world
+
+
+addBodies :
+    List (Physics.Body.Body data)
+    -> Physics.World.World data
+    -> Physics.World.World data
+addBodies bodies world =
+    List.foldl Physics.World.add world bodies

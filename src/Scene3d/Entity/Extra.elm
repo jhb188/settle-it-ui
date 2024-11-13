@@ -50,7 +50,7 @@ getTiledFloor : Scene3d.Material.Textured Physics.Coordinates.BodyCoordinates ->
 getTiledFloor texture =
     let
         tileSize =
-            10
+            5
 
         numTiles =
             round arenaWidth // tileSize

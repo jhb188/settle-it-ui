@@ -13,18 +13,19 @@ import Direction3d
 import Duration
 import Force
 import Frame3d
+import Game.Playing.Joystick as Joystick exposing (..)
 import Html exposing (Html)
 import Html.Attributes
-import Html.Events.Extra.Pointer as Pointer
+import Html.Lazy
 import Json.Decode
 import Json.Encode
 import Length
 import Mass
-import Math.Vector2 as Vec2 exposing (Vec2, vec2)
 import Me
 import Physics.Body
 import Physics.Body.Extra
 import Physics.World
+import Physics.World.Extra exposing (addBodies)
 import Pixels
 import Point3d
 import Quantity
@@ -42,11 +43,9 @@ type alias Model =
     { playerId : PlayerId
     , viewSize : Float
     , arena : Physics.World.World BodyData.Data
-    , movementPadOrigin : Vec2
-    , movementPadOffset : Maybe Vec2
+    , movementJoystickState : Joystick.Model
     , movementPadHeldMs : Float
-    , targetPadOrigin : Vec2
-    , targetPadOffset : Maybe Vec2
+    , targetJoystickState : Joystick.Model
     , targetPadHeldMs : Float
     , world : Physics.World.World Data
     , lastUpdated : Int
@@ -64,12 +63,8 @@ type alias Model =
 type Msg
     = Delta Float
     | ViewportChanged Browser.Dom.Viewport
-    | MovementPadDown Vec2
-    | MovementPadMoved Vec2
-    | MovementPadUp
-    | TargetPadDown Vec2
-    | TargetPadMoved Vec2
-    | TargetPadUp
+    | MovementPadUpdated JoystickMsg
+    | TargetPadUpdated JoystickMsg
     | BodiesUpdated Json.Encode.Value
     | TexturesLoaded (Result WebGL.Texture.Error Texture.Textures)
 
@@ -108,11 +103,9 @@ init playerId { bodies, lastUpdated, teams } =
     ( { playerId = playerId
       , viewSize = 0
       , arena = arena
-      , movementPadOrigin = vec2 0 0
-      , movementPadOffset = Nothing
+      , movementJoystickState = Joystick.init
       , movementPadHeldMs = 0
-      , targetPadOrigin = vec2 0 0
-      , targetPadOffset = Nothing
+      , targetJoystickState = Joystick.init
       , targetPadHeldMs = 0
       , world = world
       , lastUpdated = lastUpdated
@@ -148,9 +141,13 @@ update msg gameState =
                                             |> addBodies bodies
 
                                     nextWorld =
-                                        case Me.getInBodies bodies of
-                                            Just newMe ->
-                                                Me.updateInWorld (always newMe) defaultNextWorld
+                                        case ( Me.getInWorld gameState.world, Me.getInBodies bodies ) of
+                                            ( Just oldMe, Just newMe ) ->
+                                                let
+                                                    nextMe =
+                                                        Physics.Body.Extra.updateServerAuthoritativeData oldMe newMe
+                                                in
+                                                Me.updateInWorld (always nextMe) defaultNextWorld
 
                                             _ ->
                                                 defaultNextWorld
@@ -189,45 +186,55 @@ update msg gameState =
             in
             ( { gameState | viewSize = shortDimension - 20.0 }, Task.attempt TexturesLoaded Texture.init )
 
-        MovementPadDown newOrigin ->
-            ( { gameState | movementPadOrigin = newOrigin, movementPadOffset = Just newOrigin }, Cmd.none )
-
-        TargetPadDown newOrigin ->
-            ( { gameState | targetPadOrigin = newOrigin, targetPadOffset = Just newOrigin }, Cmd.none )
-
-        MovementPadMoved relativePos ->
-            ( { gameState | movementPadOffset = Just relativePos }, Cmd.none )
-
-        TargetPadMoved relativePos ->
-            ( { gameState | targetPadOffset = Just relativePos }, Cmd.none )
-
-        MovementPadUp ->
+        MovementPadUpdated joystickUpdate ->
             let
-                nextModel =
+                nextGameState =
                     { gameState
-                        | movementPadOffset = Nothing
-                        , movementPadHeldMs = 0
+                        | movementJoystickState =
+                            Joystick.update
+                                gameState.movementJoystickState
+                                joystickUpdate
                     }
             in
-            if gameState.movementPadHeldMs < jumpThresholdMs then
-                ( { nextModel | shouldJumpNextFrame = True }, Cmd.none )
+            case joystickUpdate of
+                JoystickUp ->
+                    let
+                        nextModel =
+                            { nextGameState | movementPadHeldMs = 0 }
+                    in
+                    if gameState.movementPadHeldMs < jumpThresholdMs then
+                        ( { nextModel | shouldJumpNextFrame = True }, Cmd.none )
 
-            else
-                ( nextModel, Cmd.none )
+                    else
+                        ( nextModel, Cmd.none )
 
-        TargetPadUp ->
+                _ ->
+                    ( nextGameState, Cmd.none )
+
+        TargetPadUpdated joystickUpdate ->
             let
-                nextModel =
+                nextGameState =
                     { gameState
-                        | targetPadOffset = Nothing
-                        , targetPadHeldMs = 0
+                        | targetJoystickState =
+                            Joystick.update
+                                gameState.targetJoystickState
+                                joystickUpdate
                     }
             in
-            if gameState.targetPadHeldMs < shootThresholdMs then
-                ( { nextModel | shouldShootNextFrame = True }, Cmd.none )
+            case joystickUpdate of
+                JoystickUp ->
+                    let
+                        nextModel =
+                            { nextGameState | targetPadHeldMs = 0 }
+                    in
+                    if gameState.targetPadHeldMs < shootThresholdMs then
+                        ( { nextModel | shouldShootNextFrame = True }, Cmd.none )
 
-            else
-                ( nextModel, Cmd.none )
+                    else
+                        ( nextModel, Cmd.none )
+
+                _ ->
+                    ( nextGameState, Cmd.none )
 
         TexturesLoaded result ->
             case result of
@@ -255,14 +262,6 @@ getNextSimulatedPlayingState ms gameState =
         , newBodiesUpdate = Nothing
         , msSinceLastServerUpdateApplied = gameState.msSinceLastServerUpdateApplied + ms
     }
-
-
-addBodies :
-    List (Physics.Body.Body BodyData.Data)
-    -> Physics.World.World BodyData.Data
-    -> Physics.World.World BodyData.Data
-addBodies bodies world =
-    List.foldl Physics.World.add world bodies
 
 
 simulatePhysics : Float -> Physics.World.World Data -> Physics.World.World Data
@@ -383,15 +382,9 @@ isAlive body =
 
 updateMovement : Float -> Maybe (Physics.Body.Body BodyData.Data) -> Model -> ( Model, Cmd Msg )
 updateMovement ms maybeMe gameState =
-    case gameState.movementPadOffset of
-        Just relativePos ->
+    case Joystick.getDirection gameState.movementJoystickState of
+        Just { x, y } ->
             let
-                direction =
-                    Vec2.direction relativePos gameState.movementPadOrigin
-
-                { x, y } =
-                    Vec2.toRecord <| direction
-
                 speed =
                     0.1
 
@@ -459,20 +452,14 @@ updateMovement ms maybeMe gameState =
 
 updateTarget : Float -> Model -> ( Model, Cmd Msg )
 updateTarget ms gameState =
-    case gameState.targetPadOffset of
-        Just relativePos ->
+    case Joystick.getDirection gameState.targetJoystickState of
+        Just { x, y } ->
             let
-                direction =
-                    Vec2.direction gameState.targetPadOrigin relativePos
-
-                { x, y } =
-                    Vec2.toRecord <| direction
-
                 xRotationDeg =
-                    y / 2
+                    -y
 
                 zRotationDeg =
-                    x / 2
+                    -x
 
                 coordsAreInvalid =
                     isNaN x || isNaN y
@@ -509,15 +496,38 @@ fovAngle =
     Angle.degrees 30
 
 
-view :
-    Physics.World.World BodyData.Data
+view : Model -> Html Msg
+view playingState =
+    Html.div
+        [ Html.Attributes.style "height" "100%"
+        , Html.Attributes.style "width" "100%"
+        , Html.Attributes.style "display" "flex"
+        , Html.Attributes.style "align-items" "center"
+        , Html.Attributes.style "justify-content" "center"
+        , Html.Attributes.style "flex-direction" "column"
+        , Html.Attributes.style "touch-action" "none"
+        ]
+        [ Html.Lazy.lazy6 viewGameScene
+            playingState.world
+            playingState.textures
+            playingState.teams
+            playingState.cameraXRotationAngle
+            playingState.cameraZRotationAngle
+            playingState.viewSize
+        , viewControlPad
+            playingState
+        ]
+
+
+viewGameScene :
+    Physics.World.World Data
     -> Maybe Texture.Textures
     -> List Server.Team.Team
     -> Float
     -> Float
     -> Float
     -> Html Msg
-view world textures teams cameraXRotationAngle cameraZRotationAngle viewSize =
+viewGameScene world textures teams cameraXRotationAngle cameraZRotationAngle viewSize =
     let
         viewpoint =
             Me.getViewpoint
@@ -534,102 +544,61 @@ view world textures teams cameraXRotationAngle cameraZRotationAngle viewSize =
                 |> List.filterMap (Physics.Body.Extra.toSceneEntity textures teams viewpoint)
     in
     Html.div
-        [ Html.Attributes.style "height" "100%"
-        , Html.Attributes.style "width" "100%"
-        , Html.Attributes.style "display" "flex"
-        , Html.Attributes.style "align-items" "center"
-        , Html.Attributes.style "justify-content" "center"
-        , Html.Attributes.style "flex-direction" "column"
-        , Html.Attributes.style "touch-action" "none"
+        [ Html.Attributes.style "flex" "2"
+        , Html.Attributes.style "z-index" "1"
+        , Html.Attributes.style "border" "1px solid black"
         ]
-        [ Html.div
-            [ Html.Attributes.style "flex" "2"
-            , Html.Attributes.style "z-index" "1"
-            , Html.Attributes.style "border" "1px solid black"
-            ]
-            [ Scene3d.sunny
-                { upDirection = Direction3d.positiveZ
-                , sunlightDirection = Direction3d.yz (Angle.degrees -120)
-                , shadows = True
-                , dimensions = ( Pixels.int <| round viewSize, Pixels.int <| round viewSize )
-                , camera = camera
-                , clipDepth = Length.meters 0.5
-                , background = Scene3d.backgroundColor Color.lightBlue
-                , entities = entities
-                }
-            , Html.div
-                [ Html.Attributes.style "height" ((String.fromInt <| round viewSize) ++ "px")
-                , Html.Attributes.style "width" ((String.fromInt <| round viewSize) ++ "px")
-                , Html.Attributes.style "z-index" "2"
-                , Html.Attributes.style "background" "transparent"
-                , Html.Attributes.style "display" "flex"
-                , Html.Attributes.style "align-items" "center"
-                , Html.Attributes.style "justify-content" "center"
-                , Html.Attributes.style "position" "absolute"
-                , Html.Attributes.style "top" "0"
-                ]
-                [ Html.div
-                    [ Html.Attributes.style "height" "20px"
-                    , Html.Attributes.style "width" "20px"
-                    , Html.Attributes.style "border" "2px solid black"
-                    , Html.Attributes.style "border-radius" "100%"
-                    ]
-                    []
-                ]
-            ]
+        [ Scene3d.sunny
+            { upDirection = Direction3d.positiveZ
+            , sunlightDirection = Direction3d.yz (Angle.degrees -120)
+            , shadows = True
+            , dimensions = ( Pixels.int <| round viewSize, Pixels.int <| round viewSize )
+            , camera = camera
+            , clipDepth = Length.meters 0.5
+            , background = Scene3d.backgroundColor Color.lightBlue
+            , entities = entities
+            }
         , Html.div
-            [ Html.Attributes.style "display" "flex"
-            , Html.Attributes.style "flex-direction" "row"
-            , Html.Attributes.style "flex" "1"
-            , Html.Attributes.style "width" "100%"
+            [ Html.Attributes.style "height" ((String.fromInt <| round viewSize) ++ "px")
+            , Html.Attributes.style "width" ((String.fromInt <| round viewSize) ++ "px")
+            , Html.Attributes.style "z-index" "2"
+            , Html.Attributes.style "background" "transparent"
+            , Html.Attributes.style "display" "flex"
             , Html.Attributes.style "align-items" "center"
             , Html.Attributes.style "justify-content" "center"
+            , Html.Attributes.style "position" "absolute"
+            , Html.Attributes.style "top" "0"
             ]
-            [ viewPad
-                viewSize
-                MovementPadDown
-                MovementPadMoved
-                MovementPadUp
-                [ Html.Attributes.style "background-color" "red" ]
-            , viewPad
-                viewSize
-                TargetPadDown
-                TargetPadMoved
-                TargetPadUp
-                [ Html.Attributes.style "background-color" "blue" ]
+            [ Html.div
+                [ Html.Attributes.style "height" "20px"
+                , Html.Attributes.style "width" "20px"
+                , Html.Attributes.style "border" "2px solid black"
+                , Html.Attributes.style "border-radius" "100%"
+                ]
+                []
             ]
         ]
 
 
-viewPad :
-    Float
-    -> (Vec2 -> msg)
-    -> (Vec2 -> msg)
-    -> msg
-    -> List (Html.Attribute msg)
-    -> Html msg
-viewPad viewSize onDown onMove onUp attrs =
+viewControlPad : Model -> Html Msg
+viewControlPad model =
     Html.div
-        ([ Html.Attributes.style "touch-action" "none"
-         , Html.Attributes.style "user-select" "none"
-         , Html.Attributes.style "-webkit-user-select" "none"
-         , Html.Attributes.width (round viewSize)
-         , Html.Attributes.style "height" "0"
-         , Html.Attributes.style "padding-bottom" "50%"
-         , Html.Attributes.style "flex" "1"
-         , Html.Attributes.style "margin" "5px"
-         , Pointer.onDown (\event -> onDown <| tupleToVec2 event.pointer.offsetPos)
-         , Pointer.onMove (\event -> onMove <| tupleToVec2 event.pointer.offsetPos)
-         , Pointer.onUp (always onUp)
-         ]
-            ++ attrs
-        )
-        []
-
-
-tupleToVec2 : ( Float, Float ) -> Vec2
-tupleToVec2 ( x, y ) =
-    vec2 x (negate y)
+        [ Html.Attributes.style "display" "flex"
+        , Html.Attributes.style "flex-direction" "row"
+        , Html.Attributes.style "flex" "1"
+        , Html.Attributes.style "width" "100%"
+        , Html.Attributes.style "align-items" "center"
+        , Html.Attributes.style "justify-content" "center"
+        ]
+        [ Joystick.view
+            model.viewSize
+            MovementPadUpdated
+            model.movementJoystickState
+        , Joystick.view
+            model.viewSize
+            TargetPadUpdated
+            model.targetJoystickState
+        ]
 
 
 port requestJump : String -> Cmd msg
