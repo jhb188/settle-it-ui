@@ -51,21 +51,20 @@ view viewSize onAction maybeModel =
             modelToNubPosition viewSize maybeModel
     in
     Html.div
-        [ Html.Attributes.style "touch-action" "none"
-        , Html.Attributes.style "user-select" "none"
-        , Html.Attributes.style "-webkit-user-select" "none"
-        , Html.Attributes.width (round viewSize)
+        [ Html.Attributes.width (round viewSize)
         , Html.Attributes.style "height" "0"
         , Html.Attributes.style "padding-bottom" "50%"
         , Html.Attributes.style "flex" "1"
         , Html.Attributes.style "margin" "5px"
         , Html.Attributes.class "joystick"
+        , Html.Attributes.class "no-zoom"
         , Pointer.onDown (\event -> onAction <| JoystickDown <| tupleToVec2 event.pointer.offsetPos)
         , Pointer.onMove (\event -> onAction <| JoystickMove <| tupleToVec2 event.pointer.offsetPos)
         , Pointer.onUp (onAction << always JoystickUp)
         ]
         [ Html.div
             [ Html.Attributes.class "joystick-nub"
+            , Html.Attributes.class "no-zoom"
             , Html.Attributes.style "left" x
             , Html.Attributes.style "top" y
             ]

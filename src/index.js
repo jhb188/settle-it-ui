@@ -119,7 +119,7 @@ window.onbeforeunload = () => {
 
 // prevent zoom on doubletap
 let lastTouchEnd = 0;
-let touchTapDelta = 500;
+let touchTapDelta = 300;
 document.addEventListener(
   "touchend",
   (event) => {

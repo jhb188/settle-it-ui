@@ -493,7 +493,7 @@ updateTarget ms gameState =
 
 fovAngle : Angle.Angle
 fovAngle =
-    Angle.degrees 30
+    Angle.degrees 60
 
 
 view : Model -> Html Msg
@@ -544,9 +544,9 @@ viewGameScene world textures teams cameraXRotationAngle cameraZRotationAngle vie
                 |> List.filterMap (Physics.Body.Extra.toSceneEntity textures teams viewpoint)
     in
     Html.div
-        [ Html.Attributes.style "flex" "2"
-        , Html.Attributes.style "z-index" "1"
-        , Html.Attributes.style "border" "1px solid black"
+        [ Html.Attributes.class "no-zoom"
+        , Html.Attributes.style "justify-content" "center"
+        , Html.Attributes.style "align-items" "center"
         ]
         [ Scene3d.sunny
             { upDirection = Direction3d.positiveZ
@@ -558,25 +558,6 @@ viewGameScene world textures teams cameraXRotationAngle cameraZRotationAngle vie
             , background = Scene3d.backgroundColor Color.lightBlue
             , entities = entities
             }
-        , Html.div
-            [ Html.Attributes.style "height" ((String.fromInt <| round viewSize) ++ "px")
-            , Html.Attributes.style "width" ((String.fromInt <| round viewSize) ++ "px")
-            , Html.Attributes.style "z-index" "2"
-            , Html.Attributes.style "background" "transparent"
-            , Html.Attributes.style "display" "flex"
-            , Html.Attributes.style "align-items" "center"
-            , Html.Attributes.style "justify-content" "center"
-            , Html.Attributes.style "position" "absolute"
-            , Html.Attributes.style "top" "0"
-            ]
-            [ Html.div
-                [ Html.Attributes.style "height" "20px"
-                , Html.Attributes.style "width" "20px"
-                , Html.Attributes.style "border" "2px solid black"
-                , Html.Attributes.style "border-radius" "100%"
-                ]
-                []
-            ]
         ]
 
 
@@ -589,6 +570,7 @@ viewControlPad model =
         , Html.Attributes.style "width" "100%"
         , Html.Attributes.style "align-items" "center"
         , Html.Attributes.style "justify-content" "center"
+        , Html.Attributes.class "no-zoom"
         ]
         [ Joystick.view
             model.viewSize

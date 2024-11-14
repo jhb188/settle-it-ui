@@ -24,6 +24,7 @@ html {
   padding: 0;
   box-sizing: border-box;
   font-family: 'Chalkboard', 'Chalkboard SE', Verdana, 'Trebuchet MS', sans-serif;
+  -webkit-touch-callout: none;
 }
 
 body {
@@ -98,4 +99,10 @@ h1, h2 {
   transform: translate(-50%, -50%);
   box-shadow: 0 3px 6px rgba(0, 0, 0, 0.3);
   transition: all 0.1s ease;
+}
+
+.no-zoom {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
 }
